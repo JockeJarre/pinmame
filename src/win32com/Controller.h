@@ -203,6 +203,7 @@ public:
 
 	STDMETHOD(get_ModOutputType)(/*[in]*/ int output, /*[in]*/ int no, /*[out, retval]*/ int* pVal);
 	STDMETHOD(put_ModOutputType)(/*[in]*/ int output, /*[in]*/ int no, /*[in]*/ int newVal);
+	STDMETHOD(get_FullVersion)(/*[out, retval]*/ DOUBLE *pVal);
 };
 
 #endif // !defined(AFX_Controller_H__D2811491_40D6_4656_9AA7_8FF85FD63543__INCLUDED_)

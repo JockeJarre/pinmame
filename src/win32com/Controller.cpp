@@ -1742,16 +1742,32 @@ STDMETHODIMP CController::get_Version(BSTR *pVal)
 	int nVersionNo0, nVersionNo1, nVersionNo2, nVersionNo3;
 	GetProductVersion(&nVersionNo0, &nVersionNo1, &nVersionNo2, &nVersionNo3);
 
-	TCHAR szVersion[9];
+	TCHAR szVersion[14];
 	wsprintf(szVersion, _T("%02i%02i%02i00.%04i"), nVersionNo0, nVersionNo1, nVersionNo2, nVersionNo3);
-	// Should output the full version number as 03060000.0980
-	// The last two digits are fixed to 00            ^^ to be compatiable with the former version format
-	// The build number is moved to after the decimal    ^^^^
+	// Should output the version number as 03060000.0980
+    // The build number is returned as decimal
 
 	CComBSTR bstrVersion(szVersion);
 
 	*pVal = bstrVersion.Detach();
 
+	return S_OK;
+}
+
+/*****************************************************************************************
+ * IController.Version (read-only): gets the program version of VPM including build number
+ *****************************************************************************************/
+STDMETHODIMP CController::get_FullVersion(DOUBLE *pVal)
+{
+	if (!pVal)
+		return S_FALSE;
+
+	int nVersionNo0, nVersionNo1, nVersionNo2, nVersionNo3;
+	GetProductVersion(&nVersionNo0, &nVersionNo1, &nVersionNo2, &nVersionNo3);
+
+	*pVal = (double) nVersionNo0 * 1000000 + nVersionNo1 * 10000 + nVersionNo2 * 100 + nVersionNo3 / 10000.0;
+	// Should output the full version number as 03060000.0980
+	// The build number is returned as decimal
 	return S_OK;
 }
 
