@@ -1765,7 +1765,8 @@ STDMETHODIMP CController::get_FullVersion(DOUBLE *pVal)
 	int nVersionNo0, nVersionNo1, nVersionNo2, nVersionNo3;
 	GetProductVersion(&nVersionNo0, &nVersionNo1, &nVersionNo2, &nVersionNo3);
 
-	*pVal = (double) nVersionNo0 * 1000000 + nVersionNo1 * 10000 + nVersionNo2 * 100 + nVersionNo3 / 10000.0;
+	*pVal = nVersionNo0 * 1000000 + nVersionNo1 * 10000 + nVersionNo2 * 100 + nVersionNo3 / 10000.0f;
+
 	// Should output the full version number as 03060000.0980
 	// The build number is returned as decimal
 	return S_OK;
