@@ -364,13 +364,13 @@ extern void video_update_core_dmd(struct mame_bitmap *bitmap, const struct recta
 
 /*-- Physical devices on binary outputs --*/
 
-#define CORE_MODOUT_ENABLE_MODSOL    1 /* Bitmask for options.usemodsol to enable legacy behavior (simple solenoid linear integration for WPC/SAM)  */
-#define CORE_MODOUT_ENABLE_PHYSOUT_LAMPS 0x04
-#define CORE_MODOUT_ENABLE_PHYSOUT_GI 0x08
+#define CORE_MODOUT_ENABLE_MODSOL            0x01 /* Bitmask for options.usemodsol to enable legacy behavior (simple solenoid linear integration for WPC/SAM)  */
+#define CORE_MODOUT_ENABLE_PHYSOUT_LAMPS     0x04
+#define CORE_MODOUT_ENABLE_PHYSOUT_GI        0x08
 #define CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS 0x10
 #define CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS 0x20
+#define CORE_MODOUT_FORCE_ON                 0x80 /* Bitmask for options.usemodsol for drivers that needs PWM integration to be performed whatever the user settings are. Note that this is internal to the driver. The exchanged value depends only on the user settings. */
 #define CORE_MODOUT_ENABLE_PHYSOUT_ALL (CORE_MODOUT_ENABLE_PHYSOUT_LAMPS|CORE_MODOUT_ENABLE_PHYSOUT_GI|CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS|CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS) /* Bitmask for options.usemodsol to enable physics output for solenoids/Lamp/GI/AlphaSegments */
-#define CORE_MODOUT_FORCE_ON       0x80 /* Bitmask for options.usemodsol for drivers that needs PWM integration to be performed whatever the user settings are */
 
 #define CORE_MODOUT_LAMP_MAX                 (CORE_MAXLAMPCOL * 8) /* Maximum number of modulated outputs for lamps */
 #define CORE_MODOUT_SOL_MAX                                     72 /* Maximum number of modulated outputs for solenoids */
@@ -428,8 +428,9 @@ typedef struct {
   core_tLampData lamps[CORE_MAXLAMPCOL*8];      /*Can support up to 160 lamps!*/
 } core_tLampDisplay;
 
-typedef void (*core_tPhysOutputIntegrator)(const double, const int, const int);
+typedef void (*core_tPhysOutputIntegrator)(const double, const int, const int, const int);
 
+#define FLIP_BUFFER_SIZE 32               /* Number of state considered for PWM integration. Must be even (and should a power of 2 for performance reason) */
 typedef struct {
    int type;                              /* Type of modulation from CORE_MODOUT_ definitions */
    float value;                           /* Last computed output main physical characteristic (relative brightness for bulbs, strength for solenoids,...) */
@@ -457,6 +458,9 @@ typedef struct {
          float switchDownLatency;
       } sol; // Physical model of a solenoid
    } state;
+   float flipTimeStamps[FLIP_BUFFER_SIZE];
+   unsigned int flipBufferPos;
+   unsigned int lastIntegrationFlipPos;
 } core_tPhysicOutput;
 
 #ifdef LSB_FIRST
@@ -573,10 +577,14 @@ extern int core_getSwCol(int colEn);
 extern int core_getSol(int solNo);
 extern int core_getPulsedSol(int solNo);
 extern UINT64 core_getAllSol(void);
-extern void core_getAllPhysicSols(float* state);
+extern void core_getAllPhysicSols(float* const state);
 
 /*-- AC sync and PWM integration --*/
-extern void core_request_pwm_output_update(void);
+extern void core_update_pwm_outputs(const int startIndex, const int count);
+INLINE void core_update_pwm_gis() { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_GI)) core_update_pwm_outputs(CORE_MODOUT_GI0, coreGlobals.nGI); }
+INLINE void core_update_pwm_solenoids() { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) core_update_pwm_outputs(CORE_MODOUT_SOL0, coreGlobals.nSolenoids); }
+INLINE void core_update_pwm_segments() { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS)) core_update_pwm_outputs(CORE_MODOUT_SEG0, coreGlobals.nAlphaSegs); }
+INLINE void core_update_pwm_lamps() { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_LAMPS)) core_update_pwm_outputs(CORE_MODOUT_LAMP0, coreGlobals.nLamps); }
 extern void core_set_pwm_output_type(int startIndex, int count, int type);
 extern void core_set_pwm_output_types(int startIndex, int count, int* outputTypes);
 extern void core_set_pwm_output_bulb(int startIndex, int count, int bulb, float U, int isAC, float serial_R, float relative_brightness);

@@ -381,7 +381,13 @@ typedef struct {
 typedef struct {
 	int sndNo;
 } PinmameSoundCommand;
-	
+
+typedef struct {
+	int nvramNo;
+	uint8_t oldStat;
+	uint8_t currStat;
+} PinmameNVRAMState;
+
 typedef struct {
 	const char* name;
 	PINMAME_KEYCODE code;
@@ -448,6 +454,7 @@ PINMAMEAPI uint32_t PinmameGetSolenoidMask(const int low);
 PINMAMEAPI void PinmameSetSolenoidMask(const int low, const uint32_t mask);
 PINMAMEAPI PINMAME_MOD_OUTPUT_TYPE PinmameGetModOutputType(const int output, const int no);
 PINMAMEAPI void PinmameSetModOutputType(const int output, const int no, const PINMAME_MOD_OUTPUT_TYPE type);
+PINMAMEAPI void PinmameSetTimeFence(const double timeInS);
 PINMAMEAPI int PinmameGetMaxSolenoids();
 PINMAMEAPI int PinmameGetSolenoid(const int solNo);
 PINMAMEAPI int PinmameGetChangedSolenoids(PinmameSolenoidState* const p_changedStates);
@@ -466,4 +473,7 @@ PINMAMEAPI int PinmameGetMaxSoundCommands();
 PINMAMEAPI int PinmameGetNewSoundCommands(PinmameSoundCommand* const p_newCommands);
 PINMAMEAPI int PinmameGetDIP(const int dipBank);
 PINMAMEAPI void PinmameSetDIP(const int dipBank, const int value);
+PINMAMEAPI int PinmameGetMaxNVRAM();
+PINMAMEAPI int PinmameGetNVRAM(PinmameNVRAMState* const p_nvramStates);
+PINMAMEAPI int PinmameGetChangedNVRAM(PinmameNVRAMState* const p_nvramStates);
 PINMAMEAPI void PinmameSetUserData(const void* p_userData);

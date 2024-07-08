@@ -23,8 +23,9 @@ Version 3.6 (XX XXth, 2024) - "Sounds good III / Looks good"
   preserving original game timing (currently dev only feature)
 - Ability to stop
 - Added altsound command processing support for Gottlieb System 80A
+- Improved master/rom volume processing for DCS machines
 
-Updated LISY support to 5.28-92 (Linux for Gottlieb System1 & System80, Bally, Atari, Williams and 'Home' Pinballs)
+Updated LISY support to 5.28-93 (Linux for Gottlieb System1 & System80, Bally, Atari, Williams and 'Home' Pinballs)
 
 Fix Capcom crashes in 64bit builds
 
@@ -41,6 +42,8 @@ Added the emulation of physical bulbs & LEDs connected to binary outputs, for WP
   This also includes emulation of dimmed alphanumerical segments for GTS3 and WPC (for now NOT exposed via VPMs COM-API, so only visible via the
   internal segment rendering, and partially/per-character-dimming-only via the dmddevice.dll interface), and opens up the path for emulation
   of strength modulated solenoids (for example most magnets, Capcom Kingpin, or the way most modern hardware handle Power/Hold and EOS switch).
+
+In addition to the TILDE key, now also the YEN key on respective keyboard mappings will work to bring up the internal PinMAME menu
 
 *** CORE/CPU ***
 Fixed WPC General Illumination (GI) Dimming (most noticably if more than one GI line is involved, also all 8 levels are now handled properly)
@@ -69,14 +72,16 @@ Fixed regressions by reducing the pre-shutdown time for Joctronic, NSM and Juego
 Added support for the old SC-01 Votrax ROM version (wired only to the Mars - God of War Prototype so far)
 Made it possible to increase the volume slider setting (e.g. using the Tilde key) above 0db (for now on windows only)
  try to avoid it though, as it can result in sound clipping artifacts!
+ in order to permanently save the setting, one needs to apply this workaround: please open the PinMAME options menu and press OK to save the volume adjustment to the registry like all the other settings
 Fixed regression/crashes for Elvis and Monopoly (introduced in 3.1)
 Improved emulation robustness when running multiple machines from the same generation (e.g. System11) one after another (e.g. from within VPX)
  or when resetting certain machines
 Add Wheel Of Fortune and World Poker Tour LED matrix as a group of modulated lamps
 Clean-up Metallica Coffin Magnet processor board to cleanly report its mode of operation (see https://missionpinball.org/mechs/magnets/stern_magnet_pcb/ for detailed operations)
 Fixed reset and slam-tilt problems of Baby Pac-Man
+Fixed PPS4 emulation: ADCSK and ADSK instructions did both respect the carry-in flag because of one wrong byte in the Gottlieb System 1 spider chip reads! Also, regular instructions only increase the six lowest PC bits.
 
-*** ROM SUPPORT *** Thanks to ipdb.org, Valerio Curzio, Matt's Basement Arcade, inkochnito, flipprojets.fr, Idleman, idealjoker, João Pedras & João Carneiro, ingo333, Ronaldo, Quench, Museo del Recreativo, caius, Stephan Semmler (Flippermuseum Seligenstadt), Doug Cope, Michel Maignaut, Thierry Ailloud, Francis Voglioso, Chad Hendrickson, watacaractr, indisc, Dr.Boely, Scott Charles, empee3, random_overflow
+*** ROM SUPPORT *** Thanks to Laszlo (www.zaccaria-pinball.hu), ipdb.org, Valerio Curzio, Matt's Basement Arcade, inkochnito, flipprojets.fr, Idleman, idealjoker, João Pedras & João Carneiro, ingo333, Ronaldo, Quench, Museo del Recreativo, caius, Stephan Semmler (Flippermuseum Seligenstadt), Doug Cope, Michel Maignaut, Thierry Ailloud, Francis Voglioso, Chad Hendrickson, watacaractr, indisc, Dr.Boely, Scott Charles, empee3, random_overflow, Corrado Tomaselli, www.zaccaria-pinball.com, grisu2, Miwi123, Garzol, Paulo Gordinho
 New:
 Jeutel: Papillon
 Seeben: Brooklyn (Bingo) (not working)
@@ -109,13 +114,33 @@ X-Files 3.04 (unofficial MOD)
 Correct Dumps:
 Bell: Cosmic Flash (sound ROM - might need a redump because it contains an illegal instruction in one byte?)
       Super Bowl (sound ROM redump showed one byte of difference)
+Gottlieb: All System 1 based games now use the correct A1752CF dump
 LTD:  Space Poker
 WMS:  Black Knight 2000: redumped LG-1 (German) version, startup text is no longer corrupt
       NBA Fastbreak: Changed 2.1, 2.2 & 2.3 to also use the newer sound ROM S3.0
+      Scared Stiff: The publically available S2 sound ROM is named 1.1, but actually contains 1.0. Game versions 1.2, 1.4 & 1.5 now use the proper 1.1 S2 ROM.
       The Shadow: Fix checksum of LH-6 with wrong text index patch
+Zaccaria: Devil Riders (French speech correct sound ROMs)
+          Star God (correct sound ROMs)
 
 Clones:
+Free Play Knocker sound fixes for all System 6 games/variants:
+ Algar
+ Alien Poker
+ Blackout
+ Firepower
+ Flash
+ Gorgar
+ Laser Ball
+ Scorpion
+ Time Warp
+ Tri Zone
+
+Airborne Avenger (Free Play)
 Ali (7-digit conversion Free Play rev. 76)
+American Country (ACDC MOD)
+Atarians (Free Play)
+Attack From Mars (0.3 with 0.6 Sound Prototype)
 Bad Girls (alternate set)
 Baywatch 3.00 (German)
 Beavis and Butt-Head (Class of 1812 MOD)
@@ -123,45 +148,64 @@ Big Game (MOD rev. 12)
 Black Knight L-2
 Bugs Bunny's Birthday Ball LG-2 (German)
 Cue Ball Wizard (older display rev.)
+Devil Riders (French speech, Free Play)
 Devil's Dare (Sound & Speech alternate set)
 Diner LG-2 (German)
 Dracula (One Ball MOD)
+Earth, Wind & Fire (Free Play), (alternate sound)
 Elvira and the Party Monsters LG-3 (German) (incomplete dump)
 Elvis 1.00
-Farfalla (French Speech)
+Farfalla (French Speech), (alternate, incl. Italian/French/German Speech versions)
+Fire Mountain (Free Play)
 Flipper Football 1.03
 Frankenstein 1.03 (Italian)
+Future World (Free Play)
 Galaxy (7-Digit conversion, Fixes & modified rules)
+Grand Lizard L-1
 Hook 4.01 (French), 4.00 (incomplete dumps)
-Jungle Lord (new tricks) L2 & L3beta (MOD)
+Hot Wheels (Free Play)
+House of Diamonds (Free Play)
+Jungle Lord (new tricks) L-2beta, L-2 & L-3beta (MOD)
+Last Action Hero 1.08 Spanish with Display 1.05 (not working correctly :/)
 Lightning (Free Play & MOD rev. 25)
+Locomotion (Free Play)
 Metallica 0.52
 Mexico 86 (Italian Speech)
 Middle Earth (Free Play)
 Mr. & Mrs. Pac-Man Pinball (alternate version)
 Odin (Prototype)
 Pinball Champ (French Speech)
-Pin-Bot J-2 (PEMBOT (no relation)) (MOD)
+Pin-Bot J-2, J-3 (PEMBOT (no relation)) (MOD)
+Pool Champion (Italian Speech, Free Play) (incomplete dump)
+Rollergames LA-1
 Royal Flush Deluxe rev. 1
+Scared Stiff 1.1, 1.1 with Sound 1.0
+Secret Service 4.0 Europe
 Sexy Girl (exact clone of Bally Playboy but using an additional image projector)
 Shadow, The LF-4 (French)
+Shooting the Rapids (Free Play)
 Space Riders (Free Play)
+Space Shuttle (Zaccaria) (Free Play)
 Spirit (initial release) & rev. 3 (MOD)
+Star God (Free Play), (alternate sound, Free Play)
 Striker (German Speech), (French Speech)
 STTNG LX-8 (MOD) (using the special L-1 sound roms, note that the special callouts can be turned off completely within the game menu)
 Swords of Fury LG-2 (German)
 Teenage Mutant Ninja Turtles A 0.7 VUK (Prototype)
 Terminator 2 L-8.4 (MOD)
-Time Machine (Zaccaria, Italian Speech)
+Time 2000 (Free Play)
+Time Machine (Zaccaria, Italian Speech), (Zaccaria, alternate)
 Tommy 1.02 (Belgian), 2.01 (Dutch), 3.01 (German)
-Transporter the Rescue LA-1
+Transporter the Rescue LA-1, LU-3
 Whirlwind LG-1 (German), LG-2 (German) (no U26 dumps available, seem to work with known one)
 White Water P-6 (Prototype)
 Wildfyre (One Ball MOD)
-Zankor (TMS5220 Italian Speech)
+Winter Sports (Free Play)
+Zankor (TMS5220 Italian Speech), (English Speech, and English Speech Free Play) & (German Speech, and German Speech Free Play) (the latter being an incomplete dump)
 
 Removed Clones:
 NBA Fastbreak: 3.1 with Sound S1.0 (as this was just created to be able to use S1.0, which is nowadays wired to 1.1/1.15 instead)
+Star God (alternate version) (These game ROMs are the correct ones for the main set)
 Star Trek: The Next Generation S7/DS (as these were just created to be able to use a P-1 sound rom, (for now) wired to P-4 instead)
 White Water P-1/P-2 (as these were just created to be able to use the P-1 sound roms, now wired to P-6 as found on a real machine)
 

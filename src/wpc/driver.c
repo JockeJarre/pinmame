@@ -109,14 +109,17 @@ DRIVERNV(blkshpsq)      //Black Sheep Squadron (1979) - using old Stern hardware
 // --------------------
                         //Triangle (Prototype, 1976?)
 DRIVERNV(atarians)      //Atarians, The (November 1976)
+DRIVERNV(atarianf)      //Atarians, The (November 1976) (Free Play)
 DRIVERNV(time2000)      //Time 2000 (June 1977)
+DRIVERNV(tim2000f)      //Time 2000 (June 1977/March 2024) (Free Play)
 DRIVERNV(aavenger)      //Airborne Avenger (September 1977)
+DRIVERNV(aavengef)      //Airborne Avenger (September 1977/March 2024) (Free Play)
 DRIVERNV(midearth)      //Middle Earth (February 1978)
 DRIVERNV(mideartf)      //Middle Earth (February 1978/March 2024) (Free Play)
 DRIVERNV(midearta)      //Middle Earth (Alternate, 197?)
 DRIVERNV(mideartp)      //Middle Earth (Prototype or German, 197?)
 DRIVERNV(spcrider)      //Space Riders (September 1978)
-DRIVERNV(spcridef)      //Space Riders (September 1978/March 2024) (Free Play)
+DRIVERNV(spcridef)      //Space Riders (September 1978/March 2024) (Free Play 1.1)
 DRIVERNV(superman)      //Superman (March 1979)
 DRIVERNV(hercules)      //Hercules (May 1979)
 DRIVERNV(roadrunr)      //Road Runner (Prototype, 1979)
@@ -454,6 +457,7 @@ DRIVER(lwar,e90)        //               05/87 Laser War (9.0 Europe)
 //4 x 2 x 7 (mixed) A/N Display
 DRIVER(ssvc,a26)        //Data East MPU: 03/88 Secret Service (2.6)
 DRIVER(ssvc,b26)        //               03/88 Secret Service (2.6 Alternate Sound)
+DRIVER(ssvc,e40)        //               03/88 Secret Service (4.0 Europe)
 DRIVER(ssvc,a42)        //               03/88 Secret Service (4.2 Alternate Sound)
 DRIVER(torp,e21)        //Data East MPU: 08/88 Torpedo Alley (2.1 Europe)
 DRIVER(torp,a16)        //               08/88 Torpedo Alley (1.6)
@@ -543,16 +547,17 @@ DRIVER(lah,f104)        //Data East MPU: 09/93 Last Action Hero (1.04 French)
 DRIVER(lah,l104)        //               09/93 Last Action Hero (1.04 Spanish)
 DRIVER(lah,c106)        //               09/93 Last Action Hero (1.06 Canadian)
 DRIVER(lah,107)         //               09/93 Last Action Hero (1.07)
-DRIVER(lah,l108)        //               09/93 Last Action Hero (1.08 Spanish)
+DRIVER(lah,l108)        //               09/93 Last Action Hero (1.08 Spanish, Display 1.04)
+DRIVER(lah,l108_105)    //               11/93 Last Action Hero (1.08 Spanish, Display 1.05)
 DRIVER(lah,110)         //               10/93 Last Action Hero (1.10)
 DRIVER(lah,112)         //               11/93 Last Action Hero (1.12)
 DRIVER(lah,113)         //               11/14 Last Action Hero (1.13 unofficial MOD)
-DRIVER(tftc,104)        //Data East MPU: 11/93 Tales From the Crypt (1.04 Spanish)
-DRIVER(tftc,200)        //               11/93 Tales From the Crypt (2.00)
-DRIVER(tftc,300)        //               11/93 Tales From the Crypt (3.00)
-DRIVER(tftc,302)        //               11/93 Tales From the Crypt (3.02 Dutch)
-DRIVER(tftc,303)        //               11/93 Tales From the Crypt (3.03)
-DRIVER(tftc,400)        //               10/15 Tales From the Crypt (4.00 unofficial MOD)
+DRIVER(tftc,104)        //Data East MPU: 11/93 Tales from the Crypt (1.04 Spanish)
+DRIVER(tftc,200)        //               11/93 Tales from the Crypt (2.00)
+DRIVER(tftc,300)        //               11/93 Tales from the Crypt (3.00)
+DRIVER(tftc,302)        //               11/93 Tales from the Crypt (3.02 Dutch)
+DRIVER(tftc,303)        //               11/93 Tales from the Crypt (3.03)
+DRIVER(tftc,400)        //               10/15 Tales from the Crypt (4.00 unofficial MOD)
 DRIVER(tomy,102)        //Data East MPU: 01/94 The Who's Tommy Pinball Wizard (1.02)
 DRIVER(tomy,102be)      //               01/94 The Who's Tommy Pinball Wizard (1.02 Belgian)
 DRIVER(tomy,201d)       //               02/94 The Who's Tommy Pinball Wizard (2.01 Dutch)
@@ -976,6 +981,7 @@ DRIVERNV(pinclown)      //Clown (1988)
 DRIVERNV(pinclofp)      //Clown (Free Play)
 DRIVERNV(corsario)      //Corsario (1989)
 DRIVERNV(corsarfp)      //Corsario (Free Play)
+                        //Flip VI https://www.recreativas.org/flip-vi-949-inder (1990) Proto?
 DRIVERNV(mundial )      //Mundial 90 (1990)
 DRIVERNV(mundiafp)      //Mundial 90 (Free Play)
 DRIVERNV(larana  )      //La Rana (1990)
@@ -1128,6 +1134,7 @@ DRIVERNV(monrobwl)      //Stars & Strikes (1979?)
 // MR. GAME
 // ----------------
 DRIVERNV(dakar)         //Dakar (1988?)
+                        //Fast Track (Prototype)
 DRIVERNV(motrshow)      //Motor Show (1988?)
 DRIVERNV(motrshwa)      //Motor Show (alternate set)
 DRIVERNV(macattck)      //Mac Attack (1989?)
@@ -1141,11 +1148,11 @@ DRIVERNV(comeback)      //Come Back (198?)
 // ----------------
 // NSM GAMES
 // ----------------
-DRIVERNV(gamesnsm)      //The Games (06/85)
+DRIVERNV(gamesnsm)      //The Games (06/1985)
 DRIVERNV(cosflnsm)      //Cosmic Flash (10/1985)
 DRIVERNV(firebird)      //Hot Fire Birds (12/1985)
-                        //Tag-Team Pinball (??/86)
-                        //Amazon Hunt (??/8?)
+                        //Tag-Team Pinball (??/1986)
+                        //Amazon Hunt (??/198?)
 
 // ----------------
 // PEYPER
@@ -1528,9 +1535,9 @@ DRIVERNV(orbitofp)      //         04/82 Orbitor 1 (Free Play)
 DRIVERNV(orbitora)      //         04/82 Orbitor 1 (MOD)
 DRIVERNV(orbitorb)      //         04/82 Orbitor 1 (MOD Free Play)
 DRIVERNV(orbitorc)      //         04/82 Orbitor 1 (MOD No Timed Game)
-DRIVERNV(cue)           //MPU-200: ??/82 Cue (Proto - Never released)
+DRIVERNV(cue)           //MPU-200: ??/82 Cue (Prototype - Never released)
 DRIVERNV(blbeauty)      //MPU-200: 09/84 Black Beauty (Shuffle)
-DRIVERNV(lazrlord)      //MPU-200: 10/84 Lazer Lord (Proto - Never released)
+DRIVERNV(lazrlord)      //MPU-200: 10/84 Lazer Lord (Prototype - Never released)
 // Whitestar System
 DRIVERNV(strikext)      //Whitestar: 05/00 Striker Extreme (1.02)
 DRIVERNV(strxt_uk)      //           03/00 Striker Extreme (1.01 English)
@@ -2188,6 +2195,7 @@ DRIVER(acd,168)         //        06/14 AC/DC - V1.68
 DRIVER(acd,168h)        //        06/14 AC/DC - V1.68 Limited Edition
 DRIVER(acd,170)         //        02/18 AC/DC - V1.70.0
 DRIVER(acd,170h)        //        02/18 AC/DC - V1.70.0 Limited Edition
+DRIVER(acd,170_ac)      //        04/24 AC/DC - V1.70.0 American Country MOD
 #ifdef SAM_INCLUDE_COLORED
 DRIVER(acd,168c)        // pinball browser colorized using extend memory
 DRIVER(acd,168hc)       // pinball browser colorized using extend memory
@@ -2468,9 +2476,11 @@ DRIVER(disco,l1)        //S3-483:   08/78 W Disco Fever
 DRIVER(pkrno,l1)        //S4-488:   10/78 W Pokerino
 DRIVER(phnix,l1)        //S4-485:   11/78 W Phoenix
 DRIVER(flash,l1)        //S4-486:   ??/79 W Flash (Sys.6 L-1, green flipper ROMs)
+DRIVER(flash,l1ff)      //          ??/79 W Flash (Sys.6 L-1, green flipper ROMs, Free Play Fix)
 //DRIVER(flash,l1y)     //          01/79 W Flash (Sys.4 L-1, yellow flipper ROMs)
 DRIVER(flash,l2)        //          01/79 W Flash (Sys.4 L-2, yellow flipper ROMs)
 DRIVER(flash,t1)        //                  Flash (Sys.6 T-1 /10 Scoring Ted Estes)
+DRIVER(flash,t1ff)      //                  Flash (Sys.6 T-1 /10 Scoring Ted Estes, Free Play Fix)
 DRIVER(stlwr,l2)        //S4-490:   03/79 W Stellar Wars
                         //S?-491:   06/79 W Rock'N Roll
 //System 5
@@ -2480,38 +2490,60 @@ DRIVER(arist,l1)        //S5-???:   ??/79 W Aristocrat (Shuffle)
 DRIVER(taurs,l1)        //S5-???:   ??/79 W Taurus (Shuffle)
 DRIVER(kingt,l1)        //S5-???:   ??/79 W King Tut (Shuffle)
 //System 6
-DRIVER(trizn,l1)        //S6-487:   07/79 W TriZone
-DRIVER(trizn,t1)        //                  TriZone /10 Scoring Ted Estes
+DRIVER(trizn,l1)        //S6-487:   07/79 W TriZone (L-1)
+DRIVER(trizn,l1ff)      //          07/79 W TriZone (L-1 Free Play Fix)
+DRIVER(trizn,t1)        //                  TriZone (T-1 /10 Scoring Ted Estes)
+DRIVER(trizn,t1ff)      //                  TriZone (T-1 /10 Scoring Ted Estes, Free Play Fix)
 DRIVER(tmwrp,l2)        //S6-489:   09/79 W Time Warp (L-2)
-DRIVER(tmwrp,t2)        //                  Time Warp (L-2 /10 Scoring Ted Estes)
+DRIVER(tmwrp,l2ff)      //          09/79 W Time Warp (L-2 Free Play Fix)
+DRIVER(tmwrp,t2)        //                  Time Warp (T-2 /10 Scoring Ted Estes)
+DRIVER(tmwrp,t2ff)      //                  Time Warp (T-2 /10 Scoring Ted Estes, Free Play Fix)
 DRIVER(tmwrp,l3)        //                  Time Warp (L-3)
-DRIVER(grgar,l1)        //S6-496:   11/79 W Gorgar
-DRIVER(grgar,t1)        //                  Gorgar /10 Scoring Ted Estes
-DRIVER(grgar,c1)        //                  Gorgar (Lane Change MOD)
-DRIVER(lzbal,l2)        //S6-493:   12/79 W Laser Ball
+DRIVER(tmwrp,l3ff)      //                  Time Warp (L-3 Free Play Fix)
+DRIVER(grgar,l1)        //S6-496:   11/79 W Gorgar (L-1)
+DRIVER(grgar,l1ff)      //          11/79 W Gorgar (L-1 Free Play Fix)
+DRIVER(grgar,t1)        //                  Gorgar (T-1 /10 Scoring Ted Estes)
+DRIVER(grgar,t1ff)      //                  Gorgar (T-1 /10 Scoring Ted Estes, Free Play Fix)
+DRIVER(grgar,c1)        //                  Gorgar (C-1 Lane Change MOD)
+DRIVER(lzbal,l2)        //S6-493:   12/79 W Laser Ball (L-2)
+DRIVER(lzbal,l2ff)      //          12/79 W Laser Ball (L-2 Free Play Fix)
 DRIVER(lzbal,l2sp)      //                  Laser Ball (L-2, PROM sound)
-DRIVER(lzbal,t2)        //                  Laser Ball /10 Scoring Ted Estes
+DRIVER(lzbal,l2spff)    //                  Laser Ball (L-2, PROM sound, Free Play Fix)
+DRIVER(lzbal,t2)        //                  Laser Ball (T-2 /10 Scoring Ted Estes)
+DRIVER(lzbal,t2ff)      //                  Laser Ball (T-2 /10 Scoring Ted Estes, Free Play Fix)
 DRIVER(frpwr,l2)        //S6-497:   02/80 W Firepower (L-2)
+DRIVER(frpwr,l2ff)      //          02/80 W Firepower (L-2 Free Play Fix)
 DRIVER(frpwr,l6)        //          02/80 W Firepower (L-6)
-DRIVER(frpwr,t6)        //                  Firepower (L-6) /10 Scoring Ted Estes
-DRIVER(frpwr,a6)        //          10/05   Firepower (Sys.6/6-Digit Custom Rev. 31)
-DRIVER(frpwr,b6)        //          12/03   Firepower (Sys.6 7-digit conversion)
-DRIVER(frpwr,c6)        //          10/05   Firepower (Sys.6/7-Digit Custom Rev. 31)
+DRIVER(frpwr,l6ff)      //          02/80 W Firepower (L-6 Free Play Fix)
+DRIVER(frpwr,t6)        //                  Firepower (T-6 /10 Scoring Ted Estes)
+DRIVER(frpwr,t6ff)      //                  Firepower (T-6 /10 Scoring Ted Estes, Free Play Fix)
+DRIVER(frpwr,a6)        //          10/05   Firepower (Sys.6/6-digit Custom Rev. 31)
+DRIVER(frpwr,b6)        //          12/03   Firepower (Sys.6/7-digit conversion)
+DRIVER(frpwr,c6)        //          10/05   Firepower (Sys.6/7-digit Custom Rev. 31)
 DRIVER(frpwr,d6)        //                  Firepower (Sys.6/6-digit /10 Scoring Rev. 31)
 DRIVER(omni,l1)         //          04/80 W Omni (Shuffle)
-DRIVER(blkou,l1)        //S6-495:   06/80 W Blackout
-DRIVER(blkou,f1)        //          06/80 W Blackout, French speech
-DRIVER(blkou,t1)        //                  Blackout /10 Scoring Ted Estes
-DRIVER(scrpn,l1)        //S6-494:   07/80 W Scorpion
-DRIVER(scrpn,t1)        //                  Scorpion /10 Scoring Ted Estes
-DRIVER(algar,l1)        //S6-499:   09/80 W Algar
-DRIVER(alpok,l2)        //S6-501:   10/80 W Alien Poker L-2
-DRIVER(alpok,l6)        //          10/80 W Alien Poker L-6
+DRIVER(blkou,l1)        //S6-495:   06/80 W Blackout (L-1)
+DRIVER(blkou,l1ff)      //          06/80 W Blackout (L-1 Free Play Fix)
+DRIVER(blkou,f1)        //          06/80 W Blackout (L-1 French speech)
+DRIVER(blkou,f1ff)      //          06/80 W Blackout (L-1 French speech, Free Play Fix)
+DRIVER(blkou,t1)        //                  Blackout (T-1 /10 Scoring Ted Estes)
+DRIVER(blkou,t1ff)      //                  Blackout (T-1 /10 Scoring Ted Estes, Free Play Fix)
+DRIVER(scrpn,l1)        //S6-494:   07/80 W Scorpion (L-1)
+DRIVER(scrpn,l1ff)      //          07/80 W Scorpion (L-1 Free Play Fix)
+DRIVER(scrpn,t1)        //                  Scorpion (T-1 /10 Scoring Ted Estes)
+DRIVER(scrpn,t1ff)      //                  Scorpion (T-1 /10 Scoring Ted Estes, Free Play Fix)
+DRIVER(algar,l1)        //S6-499:   09/80 W Algar (L-1)
+DRIVER(algar,l1ff)      //          09/80 W Algar (L-1 Free Play Fix)
+DRIVER(alpok,l2)        //S6-501:   10/80 W Alien Poker (L-2)
+DRIVER(alpok,l2ff)      //          10/80 W Alien Poker (L-2 Free Play Fix)
+DRIVER(alpok,l6)        //          10/80 W Alien Poker (L-6)
+DRIVER(alpok,l6ff)      //          10/80 W Alien Poker (L-6 Free Play Fix)
 DRIVER(alpok,f6)        //          10/80 W Alien Poker (L-6, French Speech)
+DRIVER(alpok,f6ff)      //          10/80 W Alien Poker (L-6, French Speech, Free Play Fix)
 DRIVER(alpok,b6)        //          11/06   Alien Poker Multiball mod
 //System 7
-DRIVER(frpwr,a7)        //S7-497:   10/05   Firepower (Sys.7/6-digit Custom Rev. 31)
-DRIVER(frpwr,b7)        //          12/03   Firepower (Sys.7 7-digit conversion)
+DRIVER(frpwr,a7)        //S7-497:   10/05 W Firepower (Sys.7/6-digit Custom Rev. 31)
+DRIVER(frpwr,b7)        //          12/03   Firepower (Sys.7/7-digit conversion)
 DRIVER(frpwr,c7)        //          11/06   Firepower (Sys.7/7-digit Custom Rev. 38)
 DRIVER(frpwr,d7)        //          10/05   Firepower (Sys.7/7-digit Custom Rev. 31)
 DRIVER(frpwr,e7)        //          10/05   Firepower (Sys.7/6-digit /10 Scoring Rev. 31)
@@ -2522,6 +2554,7 @@ DRIVER(bk,f4)           //          11/80 W Black Knight (L-4 French Speech)
 DRIVER(jngld,l1)        //S7-503:   02/81 W Jungle Lord (L-1)
 DRIVER(jngld,l2)        //          02/81 W Jungle Lord (L-2)
 DRIVER(jngld,nt)        //          09/13   Jungle Lord New Tricks
+DRIVER(jngld,ntl2b)     //          ??/21   Jungle Lord New Tricks L-2beta
 DRIVER(jngld,ntl2)      //          ??/2?   Jungle Lord New Tricks L-2 (2021 or 2022)
 DRIVER(jngld,ntl3)      //          ??/2?   Jungle Lord New Tricks L-3beta (2021 or 2022)
 DRIVER(pharo,l2)        //S7-504:   05/81 W Pharaoh (L-2)
@@ -2573,7 +2606,8 @@ DRIVER(alcat,l7)        //S11-918:  ??/85 W Alley Cats (Shuffle)
 DRIVER(hs,l3)           //S11-541:  01/86 W High Speed (L-3)
 DRIVER(hs,l4)           //          01/86 W High Speed (L-4)
 DRIVER(hs,l4c)          //          05/18 W High Speed (L-4C Competition MOD (f43c))
-DRIVER(grand,l3)        //S11-523:  04/86 W Grand Lizard (L-3)
+DRIVER(grand,l1)        //S11-523:  04/86 W Grand Lizard (L-1)
+DRIVER(grand,l3)        //          04/86 W Grand Lizard (L-3)
 DRIVER(grand,l4)        //          04/86 W Grand Lizard (L-4)
 DRIVER(rdkng,l1)        //S11-542:  07/86 W Road Kings (L-1)
 DRIVER(rdkng,l2)        //          07/86 W Road Kings (L-2)
@@ -2588,6 +2622,7 @@ DRIVER(pb,l5)           //          10/86 W Pin-Bot (L-5)
 DRIVER(pb,l5h)          //          08/12   Pin-Bot (L-5, Freeplay / solar value mod)
 DRIVER(pb,j1)           //          11/20   Pin-Bot (PEMBOT (no relation) J-1)
 DRIVER(pb,j2)           //          01/23   Pin-Bot (PEMBOT (no relation) J-2)
+DRIVER(pb,j3)           //          02/23   Pin-Bot (PEMBOT (no relation) J-3)
 DRIVER(tts,l1)          //S11-919:  ??/86 W Tic-Tac-Strike (L-1, Shuffle)
 DRIVER(tts,l2)          //          ??/86 W Tic-Tac-Strike (L-2, Shuffle)
 DRIVER(milln,l3)        //S11-555:  01/87 W Millionaire
@@ -2647,6 +2682,7 @@ DRIVER(bk2k,pa5)        //          04/89 W Black Knight 2000 (PA-5 Prototype)
                         //S11:      05/89 W Pool
 //First Game produced entirely by Williams after Merger to use Bally Name
 DRIVER(tsptr,l3)        //S11-2630: 07/89 B Transporter the Rescue (L-3)
+DRIVER(tsptr,lu3)       //          07/89 B Transporter the Rescue (LU-3)
 DRIVER(tsptr,l1)        //          06/89 B Transporter the Rescue (LA-1)
 DRIVER(polic,l2)        //S11-573:  08/89 W Police Force (LA-2)
 DRIVER(polic,l3)        //          09/89 W Police Force (LA-3)
@@ -2685,8 +2721,9 @@ DRIVER(gs,lg6)          //          ??/90 B Game Show (LG-6 German)
 DRIVER(rollr,ex)        //S11-576:  01/90 W Rollergames (EXPERIMENTAL)
 DRIVER(rollr,e1)        //          01/90 W Rollergames (PU-1 Prototype Europe)
 DRIVER(rollr,p2)        //          01/90 W Rollergames (PA-2, PA-1 Sound)
-DRIVER(rollr,l2)        //          04/90 W Rollergames (L-2)
-DRIVER(rollr,l2c)       //          04/19 W Rollergames (L-2C Competition MOD)
+DRIVER(rollr,l1)        //          04/90 W Rollergames (LA-1)
+DRIVER(rollr,l2)        //          04/90 W Rollergames (LA-2)
+DRIVER(rollr,l2c)       //          04/19 W Rollergames (LA-2C Competition MOD)
 DRIVER(rollr,l3)        //          05/90 W Rollergames (LU-3 Europe)
 DRIVER(rollr,g3)        //          05/90 W Rollergames (LG-3 German)
 DRIVER(rollr,f2)        //          ??/90 W Rollergames (LF-2 French)
@@ -3127,12 +3164,13 @@ DRIVER(congo,13)        //          01/96 W Congo (1.3, DCS95 S1.1)
 DRIVER(congo,20)        //          02/96 W Congo (2.0, DCS95 S1.1)
 DRIVER(congo,20s10k)    //          02/96 W Congo (2.0, WPC-S S1.0-kit)
 DRIVER(congo,21)        //          10/96 W Congo (2.1, DCS95 S1.1)
-DRIVER(afm,10)          //WPC-541:  12/95 B Attack From Mars (1.0 / S1.0)
-DRIVER(afm,11)          //          12/95 B Attack From Mars (1.1 / S1.0)
+DRIVER(afm,03)          //WPC-541:  12/95 B Attack From Mars (0.3 / S0.6 Prototype)
+DRIVER(afm,10)          //          02/96 B Attack From Mars (1.0 / S1.0)
+DRIVER(afm,11)          //          06/96 B Attack From Mars (1.1 / S1.0)
 DRIVER(afm,11u)         //          ??/06 B Attack From Mars (1.1 Ultrapin / S1.1)
 DRIVER(afm,11pfx)       //          12/18 B Attack From Mars (1.1 Pinball FX / S1.1)
-DRIVER(afm,113)         //          12/95 B Attack From Mars (1.13 Home version / S1.1)
-DRIVER(afm,113b)        //          12/95 B Attack From Mars (1.13b Coin Play / S1.1)
+DRIVER(afm,113)         //          06/99 B Attack From Mars (1.13 Home version / S1.1)
+DRIVER(afm,113b)        //          06/99 B Attack From Mars (1.13b Coin Play / S1.1)
 DRIVER(afm,f10)         //          ??/??   Attack From Mars (FreeWPC 0.10)
 DRIVER(afm,f20)         //          ??/??   Attack From Mars (FreeWPC 0.20)
 DRIVER(afm,f32)         //          ??/??   Attack From Mars (FreeWPC 0.32)
@@ -3156,7 +3194,11 @@ DRIVER(totan,15c)       //          04/16 W Tales of the Arabian Nights (1.5C / 
 DRIVER(ss,01)           //WPC-548:  09/96 B Scared Stiff (D0.1R Prototype with sound rev.25)
 DRIVER(ss,01b)          //          09/96 B Scared Stiff (D0.1R Prototype with sound rev.25 Coin Play)
 DRIVER(ss,03)           //          09/96 B Scared Stiff (0.3 Prototype)
+//DRIVER(ss,10)
+DRIVER(ss,11s10)        //          09/96 B Scared Stiff (1.1 with sound rev.1.0)
+DRIVER(ss,11)           //          09/96 B Scared Stiff (1.1)
 DRIVER(ss,12)           //          10/96 B Scared Stiff (1.2)
+//DRIVER(ss,13)
 DRIVER(ss,14)           //          11/96 B Scared Stiff (1.4)
 DRIVER(ss,15)           //          02/97 B Scared Stiff (1.5)
 DRIVER(jy,03)           //WPC-552:  10/96 W Junk Yard (0.3 Prototype)
@@ -3214,20 +3256,31 @@ DRIVER(tf95,12)         //WPC-648:  01/95   Test fixture WPC95
 // ------------------
                         //10/77 Combat (in all probability never produced in a SS version)
 DRIVERNV(wsports)       //01/78 Winter Sports
+DRIVERNV(wsportsf)      //      Winter Sports (Free Play)
 DRIVERNV(hod)           //07/78 House of Diamonds
+DRIVERNV(hodf)          //      House of Diamonds (Free Play)
 DRIVERNV(strike)        //09/78 Strike
 DRIVERNV(skijump)       //10/78 Ski Jump
 DRIVERNV(futurwld)      //10/78 Future World
+DRIVERNV(futurwldf)     //      Future World (Free Play)
 DRIVERNV(strapids)      //04/79 Shooting the Rapids
+DRIVERNV(strapidsf)     //      Shooting the Rapids (Free Play)
 DRIVERNV(hotwheel)      //09/79 Hot Wheels
+DRIVERNV(hotwheelf)     //      Hot Wheels (Free Play)
 DRIVERNV(spacecty)      //09/79 Space City
 DRIVERNV(firemntn)      //01/80 Fire Mountain
+DRIVERNV(firemntnf)     //      Fire Mountain (Free Play)
 DRIVERNV(stargod)       //05/80 Star God
+DRIVERNV(stargodf)      //      Star God (Free Play)
 DRIVERNV(stargoda)      //      Star God (alternate sound)
-DRIVERNV(stargodb)      //      Star God (alternate version)
+DRIVERNV(stargodaf)     //      Star God (alternate sound, Free Play)
 DRIVERNV(sshtlzac)      //09/80 Space Shuttle
+DRIVERNV(sshtlzacf)     //      Space Shuttle (Free Play)
 DRIVERNV(ewf)           //04/81 Earth, Wind & Fire
+DRIVERNV(ewff)          //      Earth, Wind & Fire (Free Play)
+DRIVERNV(ewfa)          //      Earth, Wind & Fire (alternate sound)
 DRIVERNV(locomotn)      //09/81 Locomotion
+DRIVERNV(locomotnf)     //      Locomotion (Free Play)
                         //04/82 Pinball Champ '82 (using the same roms as the '83 version)
 DRIVERNV(socrking)      //09/82 Soccer Kings
 DRIVERNV(socrkina)      //      Soccer Kings (alternate set)
@@ -3253,6 +3306,7 @@ DRIVERNV(pinc7ffp)      //      Pinball Champ (7 digits, French Speech Free Play
 DRIVERNV(pinc7gfp)      //      Pinball Champ (7 digits, German Speech Free Play)
 DRIVERNV(pinc7ifp)      //      Pinball Champ (7 digits, Italian Speech Free Play)
 DRIVERNV(tmachzac)      //04/83 Time Machine
+DRIVERNV(tmachzaca)     //      Time Machine (alternate)
 DRIVERNV(tmacgzac)      //      Time Machine (German Speech)
 DRIVERNV(tmacfzac)      //      Time Machine (French Speech)
 DRIVERNV(tmacizac)      //      Time Machine (Italian Speech)
@@ -3261,9 +3315,13 @@ DRIVERNV(tmacgfp)       //      Time Machine (German Speech Free Play)
 DRIVERNV(tmacffp)       //      Time Machine (French Speech Free Play)
 DRIVERNV(tmacifp)       //      Time Machine (Italian Speech Free Play)
 DRIVERNV(farfalla)      //09/83 Farfalla
+DRIVERNV(farfallaa)     //      Farfalla (alternate)
 DRIVERNV(farfalli)      //      Farfalla (Italian Speech)
+DRIVERNV(farfallia)     //      Farfalla (alternate, Italian Speech)
 DRIVERNV(farfallf)      //      Farfalla (French Speech)
+DRIVERNV(farfallfa)     //      Farfalla (alternate, French Speech)
 DRIVERNV(farfallg)      //      Farfalla (German Speech)
+DRIVERNV(farfallga)     //      Farfalla (alternate, German Speech)
 DRIVERNV(farffp)        //      Farfalla (Free Play)
 DRIVERNV(farfifp)       //      Farfalla (Italian Speech Free Play)
 DRIVERNV(farfffp)       //      Farfalla (French Speech Free Play)
@@ -3275,6 +3333,7 @@ DRIVERNV(dvlridef)      //      Devil Riders (French Speech)
 DRIVERNV(dvlrdfp)       //      Devil Riders (Free Play)
 DRIVERNV(dvlrdifp)      //      Devil Riders (Italian Speech Free Play))
 DRIVERNV(dvlrdgfp)      //      Devil Riders (German Speech Free Play)
+DRIVERNV(dvlrdffp)      //      Devil Riders (French Speech Free Play)
 DRIVERNV(mcastle)       //09/84 Magic Castle
 DRIVERNV(mcastlei)      //      Magic Castle (Italian Speech)
 DRIVERNV(mcastleg)      //      Magic Castle (German Speech)
@@ -3296,6 +3355,7 @@ DRIVERNV(clownfp)       //      Clown (Free Play)
 DRIVERNV(poolcham)      //12/85 Pool Champion
 DRIVERNV(poolchai)      //      Pool Champion (Italian Speech)
 DRIVERNV(poolcfp)       //      Pool Champion (Free Play)
+DRIVERNV(poolchaifp)    //      Pool Champion (Italian Speech, Free Play)
 DRIVERNV(myststar)      //??/86 Mystic Star
 DRIVERNV(bbeltzac)      //03/86 Black Belt
 DRIVERNV(bbeltzai)      //      Black Belt (Italian Speech)
@@ -3309,11 +3369,14 @@ DRIVERNV(mexico)        //07/86 Mexico 86 (German Speech)
 DRIVERNV(mexicoi)       //      Mexico 86 (Italian Speech)
 DRIVERNV(mexicofp)      //      Mexico 86 (German Speech Free Play)
 DRIVERNV(mexicifp)      //      Mexico 86 (Italian Speech Free Play)
-DRIVERNV(zankor)        //12/86 Zankor (TMS5200 Italian Speech)
+DRIVERNV(zankore)       //12/86 Zankor
+DRIVERNV(zankorefp)     //      Zankor (Free Play)
+DRIVERNV(zankor)        //      Zankor (TMS5200 Italian Speech)
 DRIVERNV(zankorfp)      //      Zankor (TMS5200 Italian Speech, Free Play)
 DRIVERNV(zankor2i)      //      Zankor (TMS5220 Italian Speech)
 DRIVERNV(zank2ifp)      //      Zankor (TMS5220 Italian Speech, Free Play)
-                        //      Zankor (German Speech) // ROMs do exist but they have been misdumped
+DRIVERNV(zankorg)       //      Zankor (German Speech)
+DRIVERNV(zankorgfp)     //      Zankor (German Speech, Free Play)
 DRIVERNV(spooky)        //04/87 Spooky
 DRIVERNV(spookyi)       //      Spooky (Italian Speech)
 DRIVERNV(spookyfp)      //      Spooky (Free Play)

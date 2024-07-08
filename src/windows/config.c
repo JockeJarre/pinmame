@@ -28,6 +28,17 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
 #include <windows.h>
 #include "driver.h"
 #include "rc.h"
@@ -255,8 +266,8 @@ struct rc_option core_opts[] = {
         { "samplerate", "sr", rc_int, &options.samplerate, "48000", 8000, 96000, NULL, "set samplerate" },
         { "samples", NULL, rc_bool, &options.use_samples, "1", 0, 0, NULL, "use samples" },
         //{ "resamplefilter", NULL, rc_bool, &options.use_filter, "1", 0, 0, NULL, "resample if samplerate does not match" },
-        { "sound", NULL, rc_bool, &enable_sound, "1", 0, 0, NULL, "enable/disable sound and sound CPUs" },
-        { "volume", "vol", rc_int, &attenuation, "0", -32, 0, NULL, "volume (range [-32,0])" },
+        { "sound", NULL, rc_bool, &enable_sound, "1", 0, 0, NULL, "enable/disable sound, incl. sound CPUs" },
+        { "volume", "vol", rc_int, &attenuation, "0", -32, 32, NULL, "volume (range [-32,32])" }, // for now only windows allows for >0 values (=gain)
 
         /* misc */
         { "Mame CORE misc options", NULL, rc_seperator, NULL, NULL, 0, 0, NULL, NULL },

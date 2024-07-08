@@ -9,7 +9,20 @@
 //============================================================
 
 // standard windows headers
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
 #include <windows.h>
 #include <conio.h>
 #include <winioctl.h>
@@ -255,6 +268,7 @@ static int key_trans_table[][4] =
 	{ KEYCODE_COLON, 		DIK_SEMICOLON,		0xba,			';' },
 	{ KEYCODE_QUOTE, 		DIK_APOSTROPHE,		0xde,			'\'' },
 	{ KEYCODE_TILDE, 		DIK_GRAVE, 			0xc0,			'`' },
+	{ KEYCODE_YEN, 			DIK_YEN , 			'\\'	,		'\\' },
 	{ KEYCODE_LSHIFT, 		DIK_LSHIFT, 		VK_SHIFT, 		0 },
 	{ KEYCODE_BACKSLASH,	DIK_BACKSLASH, 		0xdc,			'\\' },
 	{ KEYCODE_Z, 			DIK_Z,				'Z',			'Z' },
@@ -2072,7 +2086,7 @@ void start_led(void)
 	if (!use_keyboard_leds)
 		return;
 
-	// retrive windows version
+	// retrieve windows version
 	GetVersionEx(&osinfo);
 
 	// nt/2k/xp
@@ -2101,8 +2115,6 @@ void start_led(void)
 
 	// remember the initial LED states
 	original_leds = osd_get_leds();
-
-	return;
 }
 
 
@@ -2138,8 +2150,6 @@ void stop_led(void)
 			return;
 		}
 	}
-
-	return;
 }
 
 #if defined(PINMAME) && defined(PROC_SUPPORT)
@@ -2167,7 +2177,7 @@ static int proc_trans_table[][2] =
 static void add_procInputList_entry(const char *name, int code, int *proccount)
 {
 	int standardcode = PROCCODE_OTHER;
- 	struct ik *temp;
+	struct ik *temp;
 
 	// copy the name
 	char *namecopy = (char *)(malloc(strlen(name) + 1));

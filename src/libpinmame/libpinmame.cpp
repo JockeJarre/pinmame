@@ -6,6 +6,7 @@
 
 #include <thread>
 #include <vector>
+#include <algorithm>
 
 #if defined(_WIN32) || defined(_WIN64)
 #define strcasecmp _stricmp
@@ -46,6 +47,10 @@ PinmameMechInfo _mechInfo[MECH_MAXMECH];
 
 PinmameAudioInfo _audioInfo;
 float _audioData[PINMAME_ACCUMULATOR_SAMPLES * 2];
+
+int _nvramInit = 0;
+uint8_t _nvram[CORE_MAXNVRAM];
+PinmameNVRAMState _nvramState[CORE_MAXNVRAM];
 
 typedef struct {
 	PinmameDisplayLayout layout;
@@ -1046,6 +1051,15 @@ PINMAMEAPI void PinmameSetModOutputType(const int output, const int no, const PI
 }
 
 /******************************************************
+ * PinmameSetTimeFence
+ ******************************************************/
+
+PINMAMEAPI void PinmameSetTimeFence(const double timeInS)
+{
+	vp_setTimeFence(timeInS);
+}
+
+/******************************************************
  * PinmameGetMaxSolenoids
  ******************************************************/
 
@@ -1063,7 +1077,8 @@ PINMAMEAPI int PinmameGetSolenoid(const int solNo)
 	if (!_isRunning)
 		return 0;
 
-	core_request_pwm_output_update();
+   if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL))
+      core_update_pwm_outputs(CORE_MODOUT_SOL0 + solNo - 1, 1);
 
 	return vp_getSolenoid(solNo);
 }
@@ -1077,7 +1092,7 @@ PINMAMEAPI int PinmameGetChangedSolenoids(PinmameSolenoidState* const p_changedS
 	if (!_isRunning)
 		return -1;
 
-	core_request_pwm_output_update();
+   core_update_pwm_solenoids();
 
 	vp_tChgSols chgSols;
 	const int count = vp_getChangedSolenoids(chgSols);
@@ -1104,7 +1119,8 @@ PINMAMEAPI int PinmameGetLamp(const int lampNo)
 	if (!_isRunning)
 		return 0;
 
-	core_request_pwm_output_update();
+   if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_LAMPS))
+      core_update_pwm_outputs(CORE_MODOUT_LAMP0 + lampNo - 1, 1);
 
 	return vp_getLamp(lampNo);
 }
@@ -1118,7 +1134,7 @@ PINMAMEAPI int PinmameGetChangedLamps(PinmameLampState* const p_changedStates)
 	if (!_isRunning)
 		return -1;
 
-	core_request_pwm_output_update();
+   core_update_pwm_lamps();
 
 	vp_tChgLamps chgLamps;
 	const int count = vp_getChangedLamps(chgLamps);
@@ -1144,8 +1160,9 @@ PINMAMEAPI int PinmameGetGI(const int giNo)
 {
 	if (!_isRunning)
 		return 0;
-
-	core_request_pwm_output_update();
+   
+   if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_GI))
+      core_update_pwm_outputs(CORE_MODOUT_GI0 + giNo - 1, 1);
 
 	return vp_getGI(giNo);
 }
@@ -1159,7 +1176,7 @@ PINMAMEAPI int PinmameGetChangedGIs(PinmameGIState* const p_changedStates)
 	if (!_isRunning)
 		return -1;
 
-	core_request_pwm_output_update();
+   core_update_pwm_gis();
 
 	vp_tChgGIs chgGIs;
 	const int count = vp_getChangedGI(chgGIs);
@@ -1186,7 +1203,7 @@ PINMAMEAPI int PinmameGetChangedLEDs(const uint64_t mask, const uint64_t mask2, 
 	if (!_isRunning)
 		return -1;
 
-	core_request_pwm_output_update();
+   core_update_pwm_segments();
 
 	vp_tChgLED chgLEDs;
 	const int count = vp_getChangedLEDs(chgLEDs, mask, mask2);
@@ -1298,6 +1315,94 @@ PINMAMEAPI void PinmameSetDIP(const int dipBank, const int value)
 		return;
 
 	vp_setDIP(dipBank, value);
+}
+
+/******************************************************
+ * PinmameGetMaxNVRAM
+ ******************************************************/
+
+PINMAMEAPI int PinmameGetMaxNVRAM()
+{
+	return CORE_MAXNVRAM;
+}
+
+/******************************************************
+ * PinmameGetNVRAM
+ ******************************************************/
+
+PINMAMEAPI int PinmameGetNVRAM(PinmameNVRAMState* const p_nvramStates)
+{
+	if (!_isRunning)
+		return -1;
+
+	if (!(Machine && Machine->drv && Machine->drv->nvram_handler))
+		return -1;
+
+	mame_file* nvram_file = (mame_file*)malloc(sizeof(mame_file));
+	memset(nvram_file, 0, sizeof(mame_file));
+	nvram_file->type = RAM_FILE;
+	(*Machine->drv->nvram_handler)(nvram_file, 1);
+
+	if (nvram_file->offset == 0) {
+		mame_fclose(nvram_file);
+		return -1;
+	}
+
+	int size = std::min((int)nvram_file->offset, (int)CORE_MAXNVRAM);
+	for (int i = 0; i < size; ++i) {
+		p_nvramStates[i].nvramNo = i;
+		p_nvramStates[i].currStat = nvram_file->data[i];
+		p_nvramStates[i].oldStat = 0;
+	}
+
+	return size;
+}
+
+/******************************************************
+ * PinmameGetChangedNVRAM
+ ******************************************************/
+
+PINMAMEAPI int PinmameGetChangedNVRAM(PinmameNVRAMState* const p_nvramStates)
+{
+	if (!_isRunning)
+		return -1;
+
+	if (!(Machine && Machine->drv && Machine->drv->nvram_handler))
+		return -1;
+
+	mame_file* nvram_file = (mame_file*)malloc(sizeof(mame_file));
+	memset(nvram_file, 0, sizeof(mame_file));
+	nvram_file->type = RAM_FILE;
+	(*Machine->drv->nvram_handler)(nvram_file, 1);
+
+	if (nvram_file->offset == 0) {
+		mame_fclose(nvram_file);
+		return -1;
+	}
+
+	int count = 0;
+	int size = std::min((int)nvram_file->offset, (int)CORE_MAXNVRAM);
+
+	if (_nvramInit == 0) {
+		memcpy(_nvram, nvram_file->data, size);
+		_nvramInit = 1;
+	}
+	else {
+		for (int i = 0; i < size; ++i) {
+			if (_nvram[i] != nvram_file->data[i]) {
+				p_nvramStates[count].nvramNo = i;
+				p_nvramStates[count].currStat = nvram_file->data[i];
+				p_nvramStates[count].oldStat = _nvram[i];
+				count++;
+
+				_nvram[i] = nvram_file->data[i];
+			}
+		}
+	}
+
+	mame_fclose(nvram_file);
+
+	return count;
 }
 
 /******************************************************

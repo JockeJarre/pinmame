@@ -5,7 +5,20 @@
 //============================================================
 
 // standard windows headers
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
 #include <windows.h>
 #ifndef DISABLE_DX7
  #include <ddraw.h>
@@ -734,6 +747,7 @@ static void throttle_speed(void)
 // to flipper input.  By distributing the emulation more evenly over a frame, it creates more opportunities
 // for the emulated machine to "see" the input and respond to it before the pinball simulator starts to draw its frame.
 
+extern int time_fence_is_supported();
 void throttle_speed_part(int part, int totalparts)
 {
 	static double ticks_per_sleep_msec = 0;
@@ -741,6 +755,10 @@ void throttle_speed_part(int part, int totalparts)
 
 	// if we're only syncing to the refresh, bail now
 	if (win_sync_refresh)
+		return;
+
+	// if we're only syncing on an emulation fence, bail now
+	if (options.time_fence != 0.0 && time_fence_is_supported())
 		return;
 
 	// this counts as idle time

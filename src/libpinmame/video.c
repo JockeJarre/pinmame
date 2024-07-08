@@ -380,11 +380,16 @@ void SetThrottleAdj(int adj)
 
 #if !defined(_WIN32) && !defined(_WIN64)
 
+extern int time_fence_is_supported();
 static void throttle_speed(void) {
 	static double ticks_per_sleep_msec = 0;
 	cycles_t target;
 	cycles_t curr;
 	cycles_t cps;
+
+	// if we're only syncing on an emulation fence, bail now
+	if (options.time_fence != 0 && time_fence_is_supported())
+		return;
 
 	profiler_mark(PROFILER_IDLE);
 
@@ -441,6 +446,10 @@ void throttle_speed_part(int part, int totalparts)
 	//// if we're only syncing to the refresh, bail now
 	//if (win_sync_refresh)
 	//	return;
+
+	// if we're only syncing on an emulation fence, bail now
+	if (options.time_fence != 0.0 && time_fence_is_supported())
+		return;
 
 	// this counts as idle time
 	profiler_mark(PROFILER_IDLE);

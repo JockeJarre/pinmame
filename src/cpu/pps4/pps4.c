@@ -34,7 +34,7 @@ typedef struct {
 	int 	cputype;	/* 0 = PPS-4 (10660), 1 = PPS-4/2 (11660) */
 	PAIR	PC, SA, SB, BX, AB;
 	UINT8   DB;
-	INT8	accu, xreg, carry, ff1, ff2, skip;
+	INT8	accu, xreg, carry, ff1, ff2, skip, sag;
 }	PPS4_Regs;
 
 static PPS4_Regs I;
@@ -43,8 +43,8 @@ int PPS4_ICount = 0;
 static int wasLB = 0;
 static int wasLDI = 0;
 
-/* Word count for all opcodes */
-static const int words[] = {
+/* Cycle count for all opcodes */
+static const int cycleCount[] = {
 	2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -57,37 +57,42 @@ static const int words[] = {
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2
 };
 
 static UINT8 ROP(void)
 {
+	UINT8 retVal = cpu_readop(I.PC.w.l);
+	I.PC.w.l = (I.PC.w.l & 0xfc0) | ((I.PC.w.l + 1) & 0x3f);
 #if INVERT_DATA
-	return (~cpu_readop(I.PC.w.l++)) & 0xff;
+	return ~retVal & 0xff;
 #else
-	return cpu_readop(I.PC.w.l++);
+	return retVal;
 #endif
 }
 
 static UINT8 ARG(void)
 {
+	UINT8 retVal = cpu_readop_arg(I.PC.w.l);
+	I.PC.w.l = (I.PC.w.l & 0xfc0) | ((I.PC.w.l + 1) & 0x3f);
 #if INVERT_DATA
-	return (~cpu_readop_arg(I.PC.w.l++)) & 0xff;
+	return ~retVal & 0xff;
 #else
-	return cpu_readop_arg(I.PC.w.l++);
+	return retVal;
 #endif
 }
 
 static UINT8 RM(UINT32 a)
 {
-	return cpu_readmem16(a) & 0x0f;
+	return cpu_readmem16(a & (I.sag ? 0x100f : 0x1fff)) & 0x0f;
 }
 
 static void WM(UINT32 a, UINT8 v)
 {
+	if (I.sag) a &= 0x100f;
 	if (a > 0x10ff) { LOG(("%03x: Write to memory @%04x:%x\n", activecpu_get_pc(), a, v)); }
 	cpu_writemem16(a, v & 0x0f);
 }
@@ -95,9 +100,9 @@ static void WM(UINT32 a, UINT8 v)
 INLINE void execute_one(UINT8 opcode)
 {
 	PAIR tmpPair;
-	int tmp;
+	int tmp, sagSet = 0;
 
-	PPS4_ICount -= words[opcode];
+	PPS4_ICount -= cycleCount[opcode];
 	if (wasLB) wasLB--;
 	if (wasLDI) wasLDI--;
 	I.skip = 0;
@@ -156,8 +161,7 @@ INLINE void execute_one(UINT8 opcode)
 			I.AB = I.BX;
 			break;
 		case 0x09: /* ADSK */
-			I.accu += I.carry + RM(0x1000 | I.AB.w.l); // This is exactly the same as ADCSK, so where's the difference?
-//			I.accu += RM(0x1000 | I.AB.w.l); // This should actually be correct, but apparently it is not!?
+			I.accu += RM(0x1000 | I.AB.w.l);
 			I.skip = I.carry = I.accu >> 4;
 			I.accu &= 0x0f;
 			I.AB = I.BX;
@@ -202,8 +206,7 @@ INLINE void execute_one(UINT8 opcode)
 			I.accu = I.xreg;
 			break;
 		case 0x13: /* SAG */
-			I.AB.b.h = 0;
-			I.AB.b.l = I.BX.b.l & 0x0f;
+			I.sag = sagSet = 1;
 			break;
 		case 0x14: /* SKF2 */
 			I.skip = I.ff2;
@@ -415,10 +418,10 @@ INLINE void execute_one(UINT8 opcode)
 			break;
 	}
 	if (I.skip) {
-		opcode = ROP();
-		I.PC.w.l += words[opcode] - 1;
-		PPS4_ICount -= words[opcode];
+		ROP(); // skips actually one byte only - so TL won't be correctly skipped after RTNSK or such!
+		PPS4_ICount--;
 	}
+	if (!sagSet) I.sag = 0;
 }
 
 int PPS4_execute(int cycles)
@@ -586,7 +589,7 @@ const char *PPS4_info(void *context, int regnum)
 		case CPU_INFO_REG+PPS4_SA: sprintf(buffer[which], "SA:%03X", r->SA.w.l); break;
 		case CPU_INFO_REG+PPS4_SB: sprintf(buffer[which], "SB:%03X", r->SB.w.l); break;
 		case CPU_INFO_REG+PPS4_BX: sprintf(buffer[which], "BX:%03X", r->BX.w.l); break;
-		case CPU_INFO_REG+PPS4_AB: sprintf(buffer[which], "AB:%03X", r->AB.w.l); break;
+		case CPU_INFO_REG+PPS4_AB: sprintf(buffer[which], "AB:%03X", r->AB.w.l & (I.sag ? 0x00f : 0xfff)); break;
 		case CPU_INFO_REG+PPS4_DB: sprintf(buffer[which], "DB:%02X", I.DB); break;
 		case CPU_INFO_REG+PPS4_A: sprintf(buffer[which], "A:%X", I.accu); break;
 		case CPU_INFO_REG+PPS4_C: sprintf(buffer[which], "C:%X", I.carry); break;
@@ -594,8 +597,8 @@ const char *PPS4_info(void *context, int regnum)
 		case CPU_INFO_REG+PPS4_F1: sprintf(buffer[which], "FF1:%X", I.ff1); break;
 		case CPU_INFO_REG+PPS4_F2: sprintf(buffer[which], "FF2:%X", I.ff2); break;
 		case CPU_INFO_REG+PPS4_SK: sprintf(buffer[which], "SKP:%X", I.skip); break;
-		case CPU_INFO_FLAGS: sprintf(buffer[which], "%c%c%c%c",
-		  (I.carry ? 'C' : '.'), (I.ff1 ? '1' : '.'), (I.ff2 ? '2' : '.'), (I.skip ? 'S' : '.')); break;
+		case CPU_INFO_FLAGS: sprintf(buffer[which], "%c%c%c%c%c",
+		  (I.carry ? 'C' : '.'), (I.ff1 ? '1' : '.'), (I.ff2 ? '2' : '.'), (I.skip ? 'S' : '.'), (I.sag ? 'A' : '.')); break;
 		case CPU_INFO_NAME: return (I.cputype ? "PPS-4/2" : "PPS-4");
 		case CPU_INFO_FAMILY: return (I.cputype ? "Rockwell PPS-4/2" : "Rockwell PPS-4");
 		case CPU_INFO_VERSION: return "1.0";

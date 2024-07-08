@@ -8,7 +8,20 @@
 // but rather a non-complete C-implementation (it should handle all PinMAME relevant cases though)
 
 // standard windows headers
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
 #include <windows.h>
 
 // MAME headers
@@ -475,7 +488,7 @@ static inline UINT32 sqri(const UINT32 x)
 	return x*x;
 }
 
-int win_perform_blit(const struct win_blit_params *blit, int update)
+int win_perform_blit(const struct win_blit_params * const blit, int update)
 {
 	int srcdepth = (blit->srcdepth + 7) / 8;
 	int dstdepth = (blit->dstdepth + 7) / 8;
@@ -595,20 +608,22 @@ int win_perform_blit(const struct win_blit_params *blit, int update)
 		if (blit->dstyscale > 1) //!! due to hack above, make bottom black
 			memset(dst, 0, blit->dstpitch*(asmblit_srcheight / 2));
 #else
-		int c, c2, s;
-		const UINT8 * src = asmblit_srcdata;
-		UINT8 * dst = asmblit_dstdata;
+		UINT32 c;
+		const UINT8 * __restrict src = asmblit_srcdata;
+		UINT8 * __restrict dst = asmblit_dstdata;
 
-		for (c = 0; c < asmblit_srcheight; c++)
+		for (c = 0; c < asmblit_srcheight; ++c)
 		{
-			for (c2 = 0; c2 < blit->srcwidth; c2++)
+			int c2,c2d=0;
+			for (c2 = 0; c2 < blit->srcwidth; ++c2)
 			{
 				const UINT16 col = blit->srclookup[((UINT16*)src)[c2]];
-				for (s = 0; s < blit->dstxscale; ++s)
-					((UINT16*)dst)[c2 * blit->dstxscale + s] = col;
+				int s;
+				for (s = 0; s < blit->dstxscale; ++s,++c2d)
+					((UINT16*)dst)[c2d] = col;
 			}
-			for (s = 1; s < blit->dstyscale; ++s)
-				memcpy(dst + blit->dstpitch*s, dst, blit->dstpitch);
+			for (c2 = 1; c2 < blit->dstyscale; ++c2)
+				memcpy(dst + blit->dstpitch*c2, dst, blit->dstpitch);
 			src += blit->srcpitch;
 			dst += blit->dstpitch * blit->dstyscale;
 		}
@@ -616,20 +631,22 @@ int win_perform_blit(const struct win_blit_params *blit, int update)
 	}
 	else if (blit->dstdepth == 32)
 	{
-		int c, c2, s;
-		const UINT8 * src = asmblit_srcdata;
-		UINT8 * dst = asmblit_dstdata;
+		UINT32 c;
+		const UINT8 * __restrict src = asmblit_srcdata;
+		UINT8 * __restrict dst = asmblit_dstdata;
 
-		for (c = 0; c < asmblit_srcheight; c++)
+		for (c = 0; c < asmblit_srcheight; ++c)
 		{
-			for (c2 = 0; c2 < blit->srcwidth; c2++)
+			int c2,c2d=0;
+			for (c2 = 0; c2 < blit->srcwidth; ++c2)
 			{
 				const UINT32 col = blit->srclookup[((UINT16*)src)[c2]];
-				for (s = 0; s < blit->dstxscale; ++s)
-					((UINT32*)dst)[c2 * blit->dstxscale + s] = col;
+				int s;
+				for (s = 0; s < blit->dstxscale; ++s,++c2d)
+					((UINT32*)dst)[c2d] = col;
 			}
-			for (s = 1; s < blit->dstyscale; ++s)
-				memcpy(dst + blit->dstpitch*s, dst, blit->dstpitch);
+			for (c2 = 1; c2 < blit->dstyscale; ++c2)
+				memcpy(dst + blit->dstpitch*c2, dst, blit->dstpitch);
 			src += blit->srcpitch;
 			dst += blit->dstpitch * blit->dstyscale;
 		}

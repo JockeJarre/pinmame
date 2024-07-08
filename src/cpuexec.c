@@ -7,6 +7,8 @@
 ***************************************************************************/
 
 #include <math.h>
+#include <stdbool.h>
+
 #include "driver.h"
 #include "timer.h"
 #include "state.h"
@@ -205,6 +207,8 @@ static void *interleave_boost_timer;
 static void *interleave_boost_timer_end;
 static double perfect_interleave;
 
+// PinMame: time fence global offset
+static double time_fence_global_offset;
 
 
 /*************************************
@@ -409,6 +413,7 @@ void cpu_run(void)
 
 		/* loop until the user quits or resets */
 		time_to_reset = 0;
+		time_fence_global_offset = 0.0;
 		while (!time_to_quit && !time_to_reset)
 		{
 			profiler_mark(PROFILER_EXTRA);
@@ -442,6 +447,7 @@ void cpu_run(void)
  *
  *************************************/
 
+void time_fence_exit();
 void cpu_exit(void)
 {
 	int cpunum;
@@ -449,6 +455,9 @@ void cpu_exit(void)
 	/* shut down the CPU cores */
 	for (cpunum = 0; cpunum < cpu_gettotalcpu(); cpunum++)
 		cpuintrf_exit_cpu(cpunum);
+
+	// PinMame
+	time_fence_exit();
 }
 
 
@@ -809,11 +818,158 @@ void cpunum_set_halt_line(int cpunum, int state)
  *
  *************************************/
 
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
+#if defined(__GNUC__)
+#define LONG_MAX 2147483647
+#endif
+#include <windows.h>
+static HANDLE time_fence_semaphore;
+
+int time_fence_is_supported()
+{
+	if (time_fence_semaphore == NULL)
+	{
+		time_fence_semaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL);
+		return time_fence_semaphore != NULL;
+	}
+	return 1;
+}
+
+void time_fence_post()
+{
+	if (time_fence_is_supported())
+		ReleaseSemaphore(time_fence_semaphore, 1, NULL);
+}
+
+int time_fence_wait()
+{
+	return time_fence_is_supported() && (WaitForSingleObject(time_fence_semaphore, 16) == WAIT_OBJECT_0);
+}
+
+void time_fence_exit()
+{
+	if (time_fence_semaphore != NULL)
+		CloseHandle(time_fence_semaphore);
+	time_fence_semaphore = NULL;
+}
+
+
+#elif defined(__APPLE__)
+
+#include <dispatch/dispatch.h>
+static dispatch_semaphore_t time_fence_semaphore;
+static int time_fence_initialized = 0;
+
+int time_fence_is_supported()
+{
+	if (!time_fence_initialized)
+	{
+		time_fence_initialized = 1;
+		time_fence_semaphore = dispatch_semaphore_create(0);
+	}
+	return 1;
+}
+
+void time_fence_post()
+{
+	if (time_fence_is_supported())
+		dispatch_semaphore_signal(time_fence_semaphore);
+}
+
+int time_fence_wait()
+{
+	dispatch_time_t wait_length = dispatch_time(DISPATCH_TIME_NOW, 16000000);
+	return time_fence_is_supported() && (dispatch_semaphore_wait(time_fence_semaphore, wait_length) == 0);
+}
+
+void time_fence_exit()
+{
+	if (time_fence_initialized)
+	{
+		dispatch_release(time_fence_semaphore);
+		time_fence_initialized = 0;
+	}
+}
+
+#else
+
+#include <semaphore.h>
+static sem_t time_fence_semaphore;
+static int time_fence_initialized = 0;
+
+int time_fence_is_supported()
+{
+	if (!time_fence_initialized)
+	{
+		time_fence_initialized = 1;
+		if (sem_init(&time_fence_semaphore, 0, 0) != 0)
+			return 0;
+	}
+	return 1;
+}
+
+void time_fence_post()
+{
+	if (time_fence_is_supported())
+		sem_post(&time_fence_semaphore);
+}
+
+int time_fence_wait()
+{
+	struct timespec wait_length;
+	wait_length.tv_sec = 0ul;
+	wait_length.tv_nsec = 16000000l;
+	return time_fence_is_supported() && (sem_timedwait(&time_fence_semaphore, &wait_length) == 0);
+}
+
+void time_fence_exit()
+{
+	if (time_fence_initialized)
+	{
+		sem_destroy(&time_fence_semaphore);
+		time_fence_initialized = 0;
+	}
+}
+
+#endif
+
 static void cpu_timeslice(void)
 {
+	// PinMAME: allow external synchronization by suspending emulation when a time fence is reached
+	// When synchronization is lost, adjust global offset of external clock to resync on it.
+	if (options.time_fence != 0.0 && time_fence_is_supported())
+	{
+		const double now = timer_get_time();
+		if (now >= time_fence_global_offset + options.time_fence)
+		{
+			if (now >= time_fence_global_offset + options.time_fence + 1.0)
+				time_fence_global_offset = now - options.time_fence;
+			else if (time_fence_wait())
+			{
+				// Check if we are still ahead of the new time fence
+				if (now >= time_fence_global_offset + options.time_fence)
+					return;
+			}
+		}
+		else if (now < time_fence_global_offset + options.time_fence - 1.0)
+			time_fence_global_offset = now - options.time_fence;
+	}
+
 	double target = timer_time_until_next_timer();
 	int cpunum, ran;
-	
+
 	LOG(("------------------\n"));
 	LOG(("cpu_timeslice: target = %.9f\n", target));
 	
@@ -859,7 +1015,7 @@ static void cpu_timeslice(void)
 			}
 		}
 	}
-	
+
 	/* update the local times of all CPUs */
 	for (cpunum = 0; Machine->drv->cpu[cpunum].cpu_type != CPU_DUMMY; cpunum++)
 	{
@@ -884,7 +1040,7 @@ static void cpu_timeslice(void)
 		/* adjust to be relative to the global time */
 		cpu[cpunum].localtime -= target;
 	}
-	
+
 	/* update the global time */
 	timer_adjust_global_time(target);
 
@@ -909,10 +1065,10 @@ static void cpu_timeslice(void)
 void activecpu_abort_timeslice(void)
 {
 	int current_icount;
-	
+
 	VERIFY_EXECUTINGCPU_VOID(activecpu_abort_timeslice);
 	LOG(("activecpu_abort_timeslice (CPU=%d, cycles_left=%d)\n", cpu_getexecutingcpu(), activecpu_get_icount() + 1));
-	
+
 	/* swallow the remaining cycles */
 	current_icount = activecpu_get_icount() + 1;
 	cycles_stolen += current_icount;
@@ -933,7 +1089,7 @@ void activecpu_abort_timeslice(void)
 double cpunum_get_localtime(int cpunum)
 {
 	double result;
-	
+
 	VERIFY_CPUNUM(0, cpunum_get_localtime);
 
 	/* if we're active, add in the time from the current slice */
@@ -959,7 +1115,7 @@ void cpunum_suspend(int cpunum, int reason, int eatcycles)
 {
 	VERIFY_CPUNUM_VOID(cpunum_suspend);
 	LOG(("cpunum_suspend (CPU=%d, r=%X, eat=%d)\n", cpunum, reason, eatcycles));
-	
+
 	/* set the pending suspend bits, and force a resync */
 	cpu[cpunum].nextsuspend |= reason;
 	cpu[cpunum].nexteatcycles = eatcycles;

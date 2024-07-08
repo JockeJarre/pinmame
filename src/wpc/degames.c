@@ -171,6 +171,14 @@ DE1S_SOUNDROM244(  "sssndf7b.rom",CRC(4bd6b16a) SHA1(b9438a16cd35820628fe6eb8228
 DE_ROMEND
 CORE_CLONEDEF(ssvc,a42,a26,"Secret Service (4.2, alternate sound)",1988,"Data East",de_mDEAS1, 0)
 
+DE_ROMSTART88(ssvc_e40,"ssvce4-0.b5",CRC(1109be9b) SHA1(b0058d63868d6b97967fe8ee681f0a807d55cdaf),
+                   "ssvce4-0.c5", CRC(4162833b) SHA1(1699287c7b25262053ce42bf38e5608bb8b0670c))
+DE1S_SOUNDROM244(  "sssndf7.rom",CRC(980778d0) SHA1(7c1f14d327b6d0e6d0fef058f96bb1cb440c9330),      //F7 on schem (sound)
+                   "ssv1f6.rom", CRC(ccbc72f8) SHA1(c5c13fb8d05d7fb4005636655073d88b4d12d65e),       //F6 on schem (voice1)
+                   "ssv2f4.rom", CRC(53832d16) SHA1(2227eb784e0221f1bf2bdf7ea48ecd122433f1ea))       //F4 on schem (voice2)
+DE_ROMEND
+CORE_CLONEDEF(ssvc,e40,a26,"Secret Service (4.0 Europe)",1988,"Data East",de_mDEAS1, 0)
+
 /*-----------------------------------------------------------------------
 / Torpedo Alley - CPU Rev 2 /Alpha Type 2 - 32K Roms - 32/64K Sound Roms
 /------------------------------------------------------------------------*/
@@ -1030,7 +1038,15 @@ DE2S_SOUNDROM142(   "lahsnd.u7"  ,CRC(0279c45b) SHA1(14daf6b711d1936352209e90240
                     "lahsnd.u17" ,CRC(d0c15fa6) SHA1(5dcd13b578fa53c82353cda5aa774ca216c5ddfe),
                     "lahsnd.u21" ,CRC(4571dc2e) SHA1(a1068cb080c30dbc07d164eddfc5dfd0afd52d3b))
 DE_ROMEND
-CORE_CLONEDEF(lah,l108,112,"Last Action Hero (1.08 Spanish)",1993,"Data East",de_mDEDMD32S2A,0)
+CORE_CLONEDEF(lah,l108,112,"Last Action Hero (1.08 Spanish, Display 1.04)",1993,"Data East",de_mDEDMD32S2A,0)
+
+DE_ROMSTARTx0(lah_l108_105,"lahcpua.108",NO_DUMP) // seems like that display needs something else, the display date is even 1 day later than CPU 1.12
+DE_DMD32ROM8x(      "lahdispl.105",CRC(eb861132) SHA1(46786c55256bd6da491bacbf53c4fac444d9d3d4)) // we don't know where this rom is supposed to go, so parked here for now, doesn't display anything though, neither with any other known CPU rom :/
+DE2S_SOUNDROM142(   "lahsnd.u7"  ,CRC(0279c45b) SHA1(14daf6b711d1936352209e90240f51812ebe76e0),
+                    "lahsnd.u17" ,CRC(d0c15fa6) SHA1(5dcd13b578fa53c82353cda5aa774ca216c5ddfe),
+                    "lahsnd.u21" ,CRC(4571dc2e) SHA1(a1068cb080c30dbc07d164eddfc5dfd0afd52d3b))
+DE_ROMEND
+CORE_CLONEDEF(lah,l108_105,112,"Last Action Hero (1.08 Spanish, Display 1.05)",1993,"Data East",de_mDEDMD32S2A,0)
 
 DE_ROMSTARTx0(lah_110,"lahcpua.110",CRC(d1861dc2) SHA1(288bd06b6ae346d1f6a17a642d5533f1a9a3bf5e))
 DE_DMD32ROM8x(      "lahdispa.106",CRC(ca6cfec5) SHA1(5e2081387d76bed17c14120cd347d6aaf435276b))

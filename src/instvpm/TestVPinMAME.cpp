@@ -1,4 +1,18 @@
-#include "Windows.h"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _WIN32_WINNT
+#if _MSC_VER >= 1800
+ // Windows 2000 _WIN32_WINNT_WIN2K
+ #define _WIN32_WINNT 0x0500
+#elif _MSC_VER < 1600
+ #define _WIN32_WINNT 0x0400
+#else
+ #define _WIN32_WINNT 0x0403
+#endif
+#define WINVER _WIN32_WINNT
+#endif
+#include <Windows.h>
 #include "resource.h"
 #include "Globals.h"
 
@@ -14,8 +28,8 @@ class CControllerEvents : public _IControllerEvents
 {
 public:
 	// IUnknown
-	STDMETHODIMP_(ULONG) AddRef() { 
-		return ++m_uRef; 
+	STDMETHODIMP_(ULONG) AddRef() {
+		return ++m_uRef;
 	}
 
 	STDMETHODIMP_(ULONG) Release() {
@@ -53,7 +67,7 @@ public:
 	STDMETHODIMP_(long) GetIDsOfNames(REFIID riid, BSTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId) { 
 		return E_NOTIMPL; 
 	}
-	
+
 	STDMETHODIMP_(long) Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr) { 
 		switch ( dispIdMember ) {
 		case 1: // OnSolenoid(int nSolenoid, int IsActive)
@@ -61,13 +75,13 @@ public:
 				return S_FALSE;
 
 			return OnSolenoid(pDispParams->rgvarg[0].intVal, pDispParams->rgvarg[1].intVal);
-		
+
 		case 2:
 			if ( pDispParams->cArgs!=1 )
 				return S_FALSE;
 
 			return OnStateChange(pDispParams->rgvarg[0].intVal);
-		
+
 		}
 		return S_FALSE; 
 	};
@@ -162,6 +176,9 @@ BOOL PopulateListGreaterV1_10(HWND hWnd, IController *pController)
 	/* first, get a pointer to the games interface */
 	HRESULT hr = pController->get_Games(&pGames);
 
+	if (!pGames)
+		return FALSE;
+
 	/* now we need a pointer to an enumeration object */
 	IUnknown *pUnk;
 	hr = pGames->get__NewEnum((IUnknown**) &pUnk);
@@ -180,7 +197,7 @@ BOOL PopulateListGreaterV1_10(HWND hWnd, IController *pController)
 
 	VARIANT vGame;
 	unsigned long uFetched;
-	
+
 	IGame* pGame = NULL;
 
 	/* enumerate to all the games, uFetched will be 0 if the end is reached */
@@ -261,7 +278,7 @@ BOOL PopulateList(HWND hWnd, IController *pController)
 /* Starts a game /*
 /***************************************************************************************/
 void RunGame(HWND hWnd, IController *pController)
-{   
+{
 	LRESULT iIndex = SendDlgItemMessage(hWnd,IDC_GAMESLIST, LB_GETCURSEL, 0, 0);
 
 	if ( iIndex<0 )
@@ -411,7 +428,7 @@ INT_PTR PASCAL RunDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		}
 
 		if ( !PopulateList(hWnd, pController) ) {
-			DisplayError(hWnd, hr, "Retrieve the list of games. Please check your installation.");
+			DisplayError(hWnd, STG_E_UNKNOWN, "Retrieving the list of games failed. Please check your installation.");
 			EndDialog(hWnd, IDCANCEL);
 			return FALSE;
 		}
@@ -423,7 +440,7 @@ INT_PTR PASCAL RunDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		POINT ScreenPos;
 		ScreenPos.x = (GetSystemMetrics(SM_CXSCREEN)-(WindowRect.right-WindowRect.left)) / 2;
 		ScreenPos.y = (GetSystemMetrics(SM_CYSCREEN)-(WindowRect.bottom-WindowRect.top)) / 2;
-		
+
 		MoveWindow(hWnd, ScreenPos.x, ScreenPos.y, WindowRect.right-WindowRect.left, WindowRect.bottom-WindowRect.top, false);
 
 		/* set the icon */

@@ -71,6 +71,13 @@ ATARI_SNDSTART("07028-01.bin", CRC(e8034b5b) SHA1(6959912c530efcc4a0c690800867fb
 ATARI_ROMEND
 CORE_GAMEDEFNV(atarians,"Atarians, The",1976,"Atari",gl_mATARI0,0)
 
+INITGAME1(atarianf, atari_disp1, FLIP_SWNO(36,37), 1, 0)
+ATARI_2_ROMSTART(atarianf,	"atarian.e0",  CRC(45cb0427) SHA1(e286930ca36bdd0f79acefd142d2a5431fa8005b),
+							"atarianf.e00",CRC(d9ec801c) SHA1(cf28c72e61f5940807ef34ca7a1910bd7743c47f))
+ATARI_SNDSTART("07028-01.bin", CRC(e8034b5b) SHA1(6959912c530efcc4a0c690800867fb0d1f33627f))
+ATARI_ROMEND
+CORE_CLONEDEFNV(atarianf,atarians,"Atarians, The (Free Play)",1976,"Atari",gl_mATARI0,0)
+
 /*-------------------------------------------------------------------
 / Time 2000 (06/1977)
 /-------------------------------------------------------------------*/
@@ -81,6 +88,13 @@ ATARI_SNDSTART("07028-01.bin", CRC(e8034b5b) SHA1(6959912c530efcc4a0c690800867fb
 ATARI_ROMEND
 CORE_GAMEDEFNV(time2000,"Time 2000",1977,"Atari",gl_mATARI1,0)
 
+INITGAME1(tim2000f, atari_disp1, FLIPSW1920, 1, 0)
+ATARI_2_ROMSTART(tim2000f,	"time.e0",  CRC(1e79c133) SHA1(54ce5d59a00334fcec8b12c077d70e3629549af0),
+							"timef.e00",CRC(01690a0a) SHA1(73c1ebab70437b62fa708b99c9d4e418bad92b4f))
+ATARI_SNDSTART("07028-01.bin", CRC(e8034b5b) SHA1(6959912c530efcc4a0c690800867fb0d1f33627f))
+ATARI_ROMEND
+CORE_CLONEDEFNV(tim2000f,time2000,"Time 2000 (Free Play)",1977,"Atari",gl_mATARI1,0)
+
 /*-------------------------------------------------------------------
 / Airborne Avenger (09/1977)
 /-------------------------------------------------------------------*/
@@ -90,6 +104,13 @@ ATARI_2_ROMSTART(aavenger,	"airborne.e0",  CRC(44e67c54) SHA1(7f94189c12e322c419
 ATARI_SNDSTART("20252-01.bin", CRC(3D44551D) SHA1(926100F8169AB20230AD2168F94E6AD65FB1A7DC))
 ATARI_ROMEND
 CORE_GAMEDEFNV(aavenger,"Airborne Avenger",1977,"Atari",gl_mATARI1,0)
+
+INITGAME1(aavengef, atari_disp1, FLIPSW1920, 1, 1)
+ATARI_2_ROMSTART(aavengef,	"airbornef.e0", CRC(9d4f7683) SHA1(d406434af3cffbe878e05acc10403b87bee12934),
+							"airborne.e00", CRC(05ac26b8) SHA1(114d587923ade9370d606e428af02a407d272c85))
+ATARI_SNDSTART("20252-01.bin", CRC(3D44551D) SHA1(926100F8169AB20230AD2168F94E6AD65FB1A7DC))
+ATARI_ROMEND
+CORE_CLONEDEFNV(aavengef,aavenger,"Airborne Avenger (Free Play)",2024,"Atari",gl_mATARI1,0)
 
 /*-------------------------------------------------------------------
 / Middle Earth (02/1978)
@@ -142,8 +163,8 @@ ATARI_ROMEND
 CORE_GAMEDEFNV(spcrider,"Space Riders",1978,"Atari",gl_mATARI1,0)
 
 INITGAME1(spcridef, atari_disp1, FLIPSW6667, 1, 2)
-ATARI_2_ROMSTART(spcridef,	"spacel.bin", CRC(66ffb04e) SHA1(42d8b7fb7206b30478f631d0e947c0908dcf5419),
-							"spacerf.bin",CRC(133f285e) SHA1(cab4731d135a48840bc27113cc27fd5c3abceda5))
+ATARI_2_ROMSTART(spcridef,	"spacelf.bin",CRC(8bca016b) SHA1(3bfb8404ecbba6180ae7e001e19b9e44511a5a91), // 1.1
+							"spacer.bin", CRC(3cf1cd73) SHA1(c46044fb815b439f12fb3e21c470c8b93ebdfd55))
 ATARI_SNDSTART("20967-01.j3", CRC(da1f77b4) SHA1(b21fdc1c6f196c320ec5404013d672c35f95890b))
 ATARI_ROMEND
 CORE_CLONEDEFNV(spcridef,spcrider,"Space Riders (Free Play)",2024,"Atari",gl_mATARI1,0)
