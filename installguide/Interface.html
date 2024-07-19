@@ -114,6 +114,26 @@ version of VPinMAME." : Exit Sub
 
 
     <TABLE WIDTH="100%" BORDER = 1>
+    <TR><TD WIDTH="50%"><B>VPMBuildVersion</B></TH>
+        <TD WIDTH="50%" ALIGN="right">Read Only</TH></TD>
+    <TR><TD VALIGN=top COLSPAN=2>
+            <p>Returns the version number of Visual PinMAME as an floatnumber
+            "vvmmbbrr.ggggg":<BR><BR>
+        vv = Major version<BR>
+        mm = Minor version<BR>
+        bb = Beta version<BR>
+        rr = Revision<BR>
+        ggggg = Build number<BR><BR>
+  	Example:<BR>
+  		A result of "990201.04711" signifies "Version 0.99 Beta 2 Rev A build number 4711<BR><BR>
+  		If (Controller.VPMBuildVersion&lt;990201.04711) Then MsgBox "You need a newer
+version of VPinMAME." : Exit Sub
+        </TD>
+    </TR>
+    </TABLE>
+
+
+    <TABLE WIDTH="100%" BORDER = 1>
     <TR><TD WIDTH="100%" BGCOLOR="#f0f0ff" ALIGN="middle"><B>Methods</B></TH></TD>
     <TR><TD><B>Run(parentWindow, minVersion)</B></TH>
     <TR><TD VALIGN=top>

@@ -98,6 +98,7 @@ public:
 	STDMETHOD(get_Settings)(/*[out, retval]*/ IControllerSettings * *pVal);
 	STDMETHOD(get_Games)(/*[out, retval]*/ IGames* *pVal);
 	STDMETHOD(get_Version)(/*[out, retval]*/ BSTR *pVal);
+	STDMETHOD(get_VPMBuildVersion)(/*[out, retval]*/ double *pVal);
 	STDMETHOD(get_SolMask)(/*[in]*/ int nLow, /*[out, retval]*/ long *pVal);
 	STDMETHOD(put_SolMask)(/*[in]*/ int nLow, /*[in]*/ long newVal);
 	STDMETHOD(put_Mech)(/*[in]*/ int param, /*[in]*/int newVal);
