@@ -23,6 +23,7 @@
 #include <winnt.h>
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <shellscalingapi.h>
 
 // standard includes
 #include <time.h>
@@ -124,6 +125,28 @@ int main(int argc, char **argv)
 	int game_index;
 	char *ext;
 	int res = 0;
+
+#ifdef WINUI
+	// Enable DPI awareness for better display scaling
+	// Try Per-Monitor V2 (Windows 10 1703+)
+	typedef BOOL (WINAPI *SetProcessDpiAwarenessContextFunc)(DPI_AWARENESS_CONTEXT);
+	SetProcessDpiAwarenessContextFunc pSetProcessDpiAwarenessContext = 
+		(SetProcessDpiAwarenessContextFunc)GetProcAddress(GetModuleHandle(TEXT("user32.dll")), "SetProcessDpiAwarenessContext");
+	if (pSetProcessDpiAwarenessContext) {
+		pSetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+	} else {
+		// Fallback to Per-Monitor V1 (Windows 8.1+)
+		typedef HRESULT (WINAPI *SetProcessDpiAwarenessFunc)(PROCESS_DPI_AWARENESS);
+		SetProcessDpiAwarenessFunc pSetProcessDpiAwareness = 
+			(SetProcessDpiAwarenessFunc)GetProcAddress(GetModuleHandle(TEXT("shcore.dll")), "SetProcessDpiAwareness");
+		if (pSetProcessDpiAwareness) {
+			pSetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+		} else {
+			// Fallback to system DPI awareness (Windows Vista+)
+			SetProcessDPIAware();
+		}
+	}
+#endif
 
 #if 1
  #ifndef WINUI
