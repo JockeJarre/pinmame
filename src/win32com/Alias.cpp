@@ -27,9 +27,31 @@ static const struct tAliasTable { const char* alias; const char* real; } aliasTa
 	  { NULL, NULL }
 };
 
-static char alias_from_file[50];
+static char runtimeAliasName[MAX_GAME_ALIAS_LEN];
+static char runtimeRomName[MAX_GAME_ALIAS_LEN];
+static bool hasRuntimeAlias = false;
+
+static char alias_from_file[MAX_GAME_ALIAS_LEN];
+
+bool registerGameAlias(const char* aliasName, const char* romName)
+{
+	if (aliasName == NULL || romName == NULL || aliasName[0] == '\0' || romName[0] == '\0')
+		return false;
+
+	if (strlen(aliasName) >= MAX_GAME_ALIAS_LEN || strlen(romName) >= MAX_GAME_ALIAS_LEN)
+		return false;
+
+	strcpy_s(runtimeAliasName, sizeof(runtimeAliasName), aliasName);
+	strcpy_s(runtimeRomName, sizeof(runtimeRomName), romName);
+	hasRuntimeAlias = true;
+
+	return true;
+}
 
 const char* checkGameAlias(const char* aRomName) {
+	if (hasRuntimeAlias && _stricmp(aRomName, runtimeAliasName) == 0)
+		return runtimeRomName;
+
 	char AliasFilename[MAX_PATH];
 
 #ifndef _WIN64

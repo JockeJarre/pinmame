@@ -120,6 +120,7 @@ public:
 	STDMETHOD(put_HandleKeyboard)(/*[int]*/ VARIANT_BOOL newVal);
 	STDMETHOD(get_GameName)(/*[out, retval]*/ BSTR *pVal);
 	STDMETHOD(put_GameName)(/*[in]*/ BSTR newVal);
+	STDMETHOD(RegisterAlias)(/*[in]*/ BSTR aliasName, /*[in]*/ BSTR romName);
 	STDMETHOD(get_ChangedSolenoids)(/*[out, retval]*/ VARIANT *pVal);
 	STDMETHOD(get_Switches)(/*[out, retval]*/ VARIANT *pVal);
 	STDMETHOD(put_Switches)(/*[out, retval]*/ VARIANT newVal);

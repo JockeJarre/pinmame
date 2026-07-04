@@ -1153,6 +1153,36 @@ STDMETHODIMP CController::put_GameName(BSTR newVal)
 	return S_OK;
 }
 
+STDMETHODIMP CController::RegisterAlias(BSTR aliasName, BSTR romName)
+{
+	if ( m_hThreadRun!=INVALID_HANDLE_VALUE ) {
+		if ( WaitForSingleObject(m_hThreadRun, 0)==WAIT_TIMEOUT )
+			return Error(TEXT("RegisterAlias is not allowed for a running game!"));
+	}
+
+	if (aliasName == NULL || romName == NULL)
+		return Error(TEXT("Alias name and ROM name must not be empty!"));
+
+	char szAliasName[MAX_GAME_ALIAS_LEN];
+	char szRomName[MAX_GAME_ALIAS_LEN];
+	const int aliasLen = WideCharToMultiByte(CP_ACP, 0, aliasName, -1, szAliasName, sizeof szAliasName, NULL, NULL);
+	const int romLen = WideCharToMultiByte(CP_ACP, 0, romName, -1, szRomName, sizeof szRomName, NULL, NULL);
+
+	if (aliasLen == 0 || romLen == 0)
+		return Error(TEXT("Alias name and ROM name are too long!"));
+
+	if (szAliasName[0] == '\0' || szRomName[0] == '\0')
+		return Error(TEXT("Alias name and ROM name must not be empty!"));
+
+	if (GetGameNumFromString(szRomName) < 0)
+		return Error(TEXT("ROM name not found!"));
+
+	if (!registerGameAlias(szAliasName, szRomName))
+		return Error(TEXT("Unable to register alias. Check alias/ROM length."));
+
+	return S_OK;
+}
+
 /******************************************************
  * IController.ROMName property: get the internal game name (may be different from GameName if alias was triggered)
  ******************************************************/
