@@ -163,6 +163,7 @@ CController::CController() {
 	m_hEventWnd = 0;
 
 	m_szROM[0] = '\0';
+	m_szOriginalGameName[0] = '\0';
 	m_nGameNo = -1;
 
 	LoadGlobalSettings();
@@ -377,7 +378,10 @@ STDMETHODIMP CController::Run(/*[in]*/ LONG_PTR hParentWnd, /*[in,defaultvalue(1
 STDMETHODIMP CController::Stop()
 {
 	if ( m_hThreadRun==INVALID_HANDLE_VALUE )
+	{
+		clearGameAlias();
 		return S_OK;
+	}
 
 	// Disable time fence that could prevent the machine to stop
 	put_TimeFence(0.0);
@@ -389,6 +393,7 @@ STDMETHODIMP CController::Stop()
 	m_hThreadRun = INVALID_HANDLE_VALUE; 
 
 	DestroyEventWindow(this);
+	clearGameAlias();
 
 	return S_OK;
 }
@@ -1125,6 +1130,10 @@ STDMETHODIMP CController::put_GameName(BSTR newVal)
 	}
 
 	WideCharToMultiByte(CP_ACP, 0, newVal, -1, g_szGameName, sizeof g_szGameName, NULL, NULL);
+	if (m_szOriginalGameName[0] != '\0') {
+		if (!registerGameAlias(g_szGameName, m_szOriginalGameName))
+			return Error(TEXT("Unable to register OriginalGameName alias."));
+	}
 	const char* gameName = checkGameAlias(g_szGameName);
 	// don't let the game name set to an invalid value
 	int nGameNo = -1;
@@ -1149,6 +1158,43 @@ STDMETHODIMP CController::put_GameName(BSTR newVal)
 	CComVariant szROM(m_szROM);
 	m_pGames->get_Item(&szROM, &m_pGame);
 	m_pGame->get_Settings(&m_pGameSettings);
+
+	return S_OK;
+}
+
+STDMETHODIMP CController::get_OriginalGameName(BSTR *pVal)
+{
+	CComBSTR Val(m_szOriginalGameName);
+	*pVal = Val.Detach();
+	return S_OK;
+}
+
+STDMETHODIMP CController::put_OriginalGameName(BSTR newVal)
+{
+	if ( m_hThreadRun!=INVALID_HANDLE_VALUE ) {
+		if ( WaitForSingleObject(m_hThreadRun, 0)==WAIT_TIMEOUT )
+			return Error(TEXT("Setting OriginalGameName is not allowed for a running game!"));
+	}
+
+	char szOriginalGameName[sizeof m_szOriginalGameName];
+	if (WideCharToMultiByte(CP_ACP, 0, newVal, -1, szOriginalGameName, sizeof szOriginalGameName, NULL, NULL) == 0)
+		return Error(TEXT("Original game name is too long!"));
+
+	if (szOriginalGameName[0] == '\0') {
+		m_szOriginalGameName[0] = '\0';
+		clearGameAlias();
+		return S_OK;
+	}
+
+	if (GetGameNumFromString(szOriginalGameName) < 0)
+		return Error(TEXT("Original game name not found!"));
+
+	lstrcpy(m_szOriginalGameName, szOriginalGameName);
+
+	if (g_szGameName[0] != '\0') {
+		if (!registerGameAlias(g_szGameName, m_szOriginalGameName))
+			return Error(TEXT("Unable to register OriginalGameName alias."));
+	}
 
 	return S_OK;
 }

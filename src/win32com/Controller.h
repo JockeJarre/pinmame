@@ -45,6 +45,7 @@ public:
 													// every time a game name is set
 
 	char				m_szROM[256];				// String containing rom name (game name)
+	char				m_szOriginalGameName[256];	// Optional original ROM for in-memory alias GameName -> OriginalGameName
 	int					m_nGameNo;					// the number of the actual game in the drivers list, -1 if no game selected
 	IGame				*m_pGame;					// Pointer to a game object of the actual game
 	IGameSettings		*m_pGameSettings;			// Pointer to a settings object of the actual game
@@ -120,6 +121,8 @@ public:
 	STDMETHOD(put_HandleKeyboard)(/*[int]*/ VARIANT_BOOL newVal);
 	STDMETHOD(get_GameName)(/*[out, retval]*/ BSTR *pVal);
 	STDMETHOD(put_GameName)(/*[in]*/ BSTR newVal);
+	STDMETHOD(get_OriginalGameName)(/*[out, retval]*/ BSTR *pVal);
+	STDMETHOD(put_OriginalGameName)(/*[in]*/ BSTR newVal);
 	STDMETHOD(RegisterAlias)(/*[in]*/ BSTR aliasName, /*[in]*/ BSTR romName);
 	STDMETHOD(get_ChangedSolenoids)(/*[out, retval]*/ VARIANT *pVal);
 	STDMETHOD(get_Switches)(/*[out, retval]*/ VARIANT *pVal);

@@ -48,6 +48,13 @@ bool registerGameAlias(const char* aliasName, const char* romName)
 	return true;
 }
 
+void clearGameAlias()
+{
+	runtimeAliasName[0] = '\0';
+	runtimeRomName[0] = '\0';
+	hasRuntimeAlias = false;
+}
+
 const char* checkGameAlias(const char* aRomName) {
 	if (hasRuntimeAlias && _stricmp(aRomName, runtimeAliasName) == 0)
 		return runtimeRomName;
