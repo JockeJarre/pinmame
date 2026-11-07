@@ -310,6 +310,9 @@ static MACHINE_INIT(se3) {
    coreGlobals.nSolenoids = CORE_FIRSTCUSTSOL - 1 + core_gameData->hw.custSol;
    core_set_pwm_output_type(CORE_MODOUT_SOL0, coreGlobals.nSolenoids, CORE_MODOUT_SOL_2_STATE);
    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 15 - 1, 2, CORE_MODOUT_PULSE); // Fake solenoids for fast flip
+   // Solenoids 33..36 (aux boards: magnets, ASTB): not fast on, which would write slot & 31 of solenoids2, the lower
+   // flipper bits; the driver sets 33..36 itself, at bits 4..7
+   core_set_pwm_output_type(CORE_MODOUT_SOL0 + 33 - 1, 4, CORE_MODOUT_LEGACY_SOL_2_STATE);
    coreGlobals.nGI = 1;
    core_set_pwm_output_type(CORE_MODOUT_GI0, coreGlobals.nGI, CORE_MODOUT_BULB_44_5_7V_AC);
    const struct GameDriver* rootDrv = Machine->gamedrv;
@@ -427,6 +430,9 @@ static MACHINE_INIT(se) {
   coreGlobals.nSolenoids = CORE_FIRSTCUSTSOL - 1 + core_gameData->hw.custSol;
   core_set_pwm_output_type(CORE_MODOUT_SOL0, coreGlobals.nSolenoids, CORE_MODOUT_SOL_2_STATE);
   core_set_pwm_output_type(CORE_MODOUT_SOL0 + 15 - 1, 2, CORE_MODOUT_PULSE); // Fake solenoids for fast flip
+  // Solenoids 33..36 (aux boards: magnets, ASTB): not fast on, which would write slot & 31 of solenoids2, the lower
+  // flipper bits; the driver sets 33..36 itself, at bits 4..7
+  core_set_pwm_output_type(CORE_MODOUT_SOL0 + 33 - 1, 4, CORE_MODOUT_LEGACY_SOL_2_STATE);
   coreGlobals.nGI = 1;
   core_set_pwm_output_type(CORE_MODOUT_GI0, coreGlobals.nGI, CORE_MODOUT_BULB_44_5_7V_AC);
   // Game specific hardware
@@ -829,10 +835,19 @@ static WRITE_HANDLER(giaux_w) {
       core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 33 - 1, selocals.auxdata, 0x07); // Solenoids 33..35
    }
 
-   // Board 520-5192-00: Solenoid Expander board (3 outputs, not latched)
-   if (core_gameData->hw.display & SE_BOARDID_520_5192_00) {
-      coreGlobals.solenoids2 = (coreGlobals.solenoids2 & 0xff0f) | ((data & 0x38) << 1);
-      core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 33 - 1, (data & 0x38) >> 3, 0x07); // Solenoids 33..35
+   // Board 520-5192-00 wired to U201/J2 latch (low 3 bits)
+   if (core_gameData->hw.display & SE_BOARDID_520_5192_00_J2) {
+       const UINT8 outputs = selocals.auxdata & 0x07;
+       coreGlobals.solenoids2 = (coreGlobals.solenoids2 & 0xff0f) | (outputs << 4);
+       core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 33 - 1, outputs, 0x07); // Solenoids 33..35
+   }
+
+   // Board 520-5192-00 wired to U206/J3 latch (bits 3-5): UK only Post Save up/down posts (RCT manual: J3-9..11 drive TIP122s, high = coil on).
+   // Only meaningful on UK configured games: otherwise nothing is connected, these are the BSTB/CSTB/DSTB strobes idling high (33-35 read on)
+   if (core_gameData->hw.display & SE_BOARDID_520_5192_00_J3) {
+       const UINT8 outputs = (data & 0x38) >> 3;
+       coreGlobals.solenoids2 = (coreGlobals.solenoids2 & 0xff0f) | (outputs << 4);
+       core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 33 - 1, outputs, 0x07); // Solenoids 33..35
    }
 
    // Board 520-5152-00 (ID4) or 520-5078-00 (Tommy) servo controller board

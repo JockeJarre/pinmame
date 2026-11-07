@@ -89,6 +89,10 @@ if(NOT MSVC)
    # /GR-: no RTTI (the code uses no dynamic_cast/typeid), C++ only
    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
 
+   # Apple clang still defaults to -fcommon, and the common symbols of the large tables make ld warn
+   # about the __DATA,__common section alignment; GCC 10+ and upstream clang 11+ default to this already
+   add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-common>)
+
    # /Gy + COMDAT folding: emit per-function/data sections and let the linker strip unused ones
    add_compile_options(-ffunction-sections -fdata-sections)
    if(APPLE)
@@ -127,6 +131,7 @@ add_compile_definitions(
    HAS_M6802=1
    HAS_ADSP2101=1
    HAS_ADSP2105=1
+   HAS_ADSP2104=1
    HAS_Z80=1
    HAS_M6502=1
    HAS_M65C02=1
@@ -148,6 +153,7 @@ add_compile_definitions(
    HAS_I8752=1
    HAS_TMS7000=1
    HAS_AT91=1
+   HAS_PIC32MX=1
    HAS_ARM7=1
    HAS_CDP1802=1
    HAS_TMS9980=1
@@ -269,6 +275,15 @@ set(PINMAME_SOURCES
    src/cpu/m68000/m68kdasm.c
    src/cpu/m68000/m68kmame.c
    src/cpu/m68000/m68kmame.h
+   src/cpu/mips32/mips32.c
+   src/cpu/mips32/mips32.h
+   src/cpu/mips32/mips32dasm.c
+   src/cpu/p8x32a/p8x32a.c
+   src/cpu/p8x32a/p8x32a.h
+   src/cpu/pic32mx/pic32mx.c
+   src/cpu/pic32mx/pic32mx.h
+   src/cpu/pic32mx/pic32mxcpu.c
+   src/cpu/pic32mx/pic32mxcpu.h
    src/cpu/pps4/pps4.c
    src/cpu/pps4/pps4.h
    src/cpu/pps4/pps4dasm.c
@@ -315,6 +330,8 @@ set(PINMAME_SOURCES
    src/inptport.h
    src/input.c
    src/input.h
+   src/keyscript.c
+   src/keyscript.h
    src/machine/4094.c
    src/machine/4094.h
    src/machine/6522via.c
@@ -331,6 +348,8 @@ set(PINMAME_SOURCES
    src/machine/eeprom.h
    src/machine/i8155.c
    src/machine/i8155.h
+   src/machine/i8256.c
+   src/machine/i8256.h
    src/machine/mathbox.c
    src/machine/mathbox.h
    src/machine/pic8259.c
@@ -548,11 +567,45 @@ set(PINMAME_SOURCES
    src/wpc/peyper.c
    src/wpc/peyper.h
    src/wpc/peypergames.c
+   src/wpc/pinheck.c
+   src/wpc/pinheck.h
+   src/wpc/pinheck/audio.c
+   src/wpc/pinheck/audio.h
+   src/wpc/pinheck/board.c
+   src/wpc/pinheck/board.h
+   src/wpc/pinheck/bootldr.c
+   src/wpc/pinheck/bootldr.h
+   src/wpc/pinheck/display.c
+   src/wpc/pinheck/display.h
+   src/wpc/pinheck/dmd.c
+   src/wpc/pinheck/dmd.h
+   src/wpc/pinheck/eeprom.c
+   src/wpc/pinheck/eeprom.h
+   src/wpc/pinheck/hexload.c
+   src/wpc/pinheck/hexload.h
+   src/wpc/pinheck/prop.c
+   src/wpc/pinheck/prop.h
+   src/wpc/pinheck/rtc.c
+   src/wpc/pinheck/rtc.h
+   src/wpc/pinheck/sd.c
+   src/wpc/pinheck/sd.h
+   src/wpc/pinheck/vfat.c
+   src/wpc/pinheck/vfat.h
+   src/wpc/pinheck/zipsrc.c
+   src/wpc/pinheck/zipsrc.h
+   src/wpc/pinheckgames.c
    src/wpc/play.c
    src/wpc/play.h
    src/wpc/playgames.c
    src/wpc/playsnd.c
+   src/wpc/recel.c
+   src/wpc/recel.h
+   src/wpc/recelgames.c
+   src/wpc/recelsnd.c
    src/wpc/regama.c
+   src/wpc/rfranco.c
+   src/wpc/rfranco.h
+   src/wpc/rfrancogames.c
    src/wpc/rotation.c
    src/wpc/rowamet.c
    src/wpc/s3games.c
@@ -573,6 +626,10 @@ set(PINMAME_SOURCES
    src/wpc/segames.c
    src/wpc/sim.c
    src/wpc/sim.h
+   src/wpc/sims/pinheck/amh.c
+   src/wpc/sims/pinheck/dominos.c
+   src/wpc/sims/pinheck/jetsons.c
+   src/wpc/sims/pinheck/rzspook.c
    src/wpc/sims/wpc/full/sttng.c
    src/wpc/sims/wpc/full/fh.c
    src/wpc/sims/wpc/full/jd.c
@@ -623,11 +680,13 @@ set(PINMAME_SOURCES
    src/wpc/sims/se/prelim/monopoly.c
    src/wpc/sims/se/prelim/elvis.c
    src/wpc/sims/se/prelim/harley.c
+   src/wpc/sims/atari/prelim/fourx4.c
    src/wpc/sims/s11/full/dd.c
    src/wpc/sims/s11/full/milln.c
    src/wpc/sims/s11/prelim/eatpm.c
    src/wpc/sims/s7/full/bk.c
    src/wpc/sims/s7/full/tmfnt.c
+   src/wpc/sims/sleic/iomoon.c
    src/wpc/slalom.c
    src/wpc/sleic.c
    src/wpc/sleic.h
@@ -708,6 +767,11 @@ set(PINMAME_SOURCES
    ext/zlib/zutil.c
 )
 
+# mips32.c: fast_run's threaded dispatch (GCC/Clang) only pays off with tail merging off
+set_source_files_properties(src/cpu/mips32/mips32.c PROPERTIES COMPILE_OPTIONS
+   "$<$<C_COMPILER_ID:GNU>:-fno-crossjumping>;$<$<C_COMPILER_ID:Clang,AppleClang>:-mllvm>;$<$<C_COMPILER_ID:Clang,AppleClang>:-enable-tail-merge=false>"
+)
+
 if(PLATFORM STREQUAL "win")
    list(APPEND PINMAME_SOURCES
       src/vc/dirent.c
@@ -745,6 +809,7 @@ set(PINMAME_INCLUDE_DIRS
    src/unix
    src/unix/sysdep
 )
+
 
 if(PLATFORM STREQUAL "win" OR PLATFORM STREQUAL "win-mingw")
    list(APPEND PINMAME_INCLUDE_DIRS
@@ -787,13 +852,22 @@ if(BUILD_SHARED)
       LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib
    )
 
-   install(FILES src/libpinmame/libpinmame.h DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   install(FILES
+      src/libpinmame/libpinmame.h
+      src/libpinmame/PinMAMEPlugin.h
+      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/pinmame
+   )
 
    if(PLATFORM STREQUAL "win" OR PLATFORM STREQUAL "win-mingw" OR PLATFORM STREQUAL "macos" OR PLATFORM STREQUAL "linux")
       add_executable(pinmame_test
          src/libpinmame/test.cpp
       )
       target_link_libraries(pinmame_test PUBLIC pinmame_shared)
+
+      add_executable(pinmame_test_paths
+         src/libpinmame/test_paths.cpp
+      )
+      target_link_libraries(pinmame_test_paths PUBLIC pinmame_shared)
    endif()
 endif()
 
@@ -817,7 +891,11 @@ if(BUILD_STATIC)
       LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib
    )
 
-   install(FILES src/libpinmame/libpinmame.h DESTINATION ${CMAKE_INSTALL_PREFIX}/include)
+   install(FILES
+      src/libpinmame/libpinmame.h
+      src/libpinmame/PinMAMEPlugin.h
+      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/pinmame
+   )
 
    if(PLATFORM STREQUAL "win" OR PLATFORM STREQUAL "win-mingw" OR PLATFORM STREQUAL "macos" OR PLATFORM STREQUAL "linux")
       add_executable(pinmame_test_s
@@ -839,4 +917,27 @@ if(TARGET pinmame_shared)
 endif()
 if(TARGET pinmame_static)
    pinmame_enable_asmjit(pinmame_static)
+endif()
+
+# --- Pinball 2000 subsystem (src/p2k)
+# On by default; -DPINMAME_P2K=OFF leaves neither the driver nor the MediaGX CPU registered
+# and a plain libpinmame unchanged. Everything the subsystem needs is in cmake/p2k.cmake,
+# shared with the Windows builds
+include(${CMAKE_SOURCE_DIR}/cmake/p2k.cmake)
+if(TARGET pinmame_shared)
+   pinmame_enable_p2k(pinmame_shared)
+endif()
+if(TARGET pinmame_static)
+   pinmame_enable_p2k(pinmame_static)
+endif()
+
+# --- Stern Spike 1 subsystem (src/spike1)
+# On by default in 64-bit builds; -DPINMAME_SPIKE1=OFF leaves neither the driver nor its CPU registered. After the
+# Pinball 2000 subsystem, whose MAME compatibility layer it shares - see cmake/spike1.cmake
+include(${CMAKE_SOURCE_DIR}/cmake/spike1.cmake)
+if(TARGET pinmame_shared)
+   pinmame_enable_spike1(pinmame_shared)
+endif()
+if(TARGET pinmame_static)
+   pinmame_enable_spike1(pinmame_static)
 endif()

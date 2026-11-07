@@ -30,7 +30,9 @@ static DISCRETE_SOUND_START(zac1311_discInt)
 
   DISCRETE_ADDER4(NODE_50,1,NODE_10,NODE_20,NODE_30,NODE_40) // Mix all four sound sources
 
-  DISCRETE_OUTPUT(NODE_50, 50)                               // Take the output from the mixer
+  /* Unipolar (four sawtooths of BIAS 10000, +40000 of DC even in silence: disabled wave nodes output their BIAS),
+     hence _AC to correct/center around 0. Peaks +-25000 per tone, about +-100000 (3x 16bit full scale) with all four - level unverified */
+  DISCRETE_OUTPUT_AC(NODE_50, 50)                            // Take the output from the mixer
 DISCRETE_SOUND_END
 
 MACHINE_DRIVER_START(zac1311)
@@ -270,7 +272,8 @@ static DISCRETE_SOUND_START(zac1146_discInt)
   DISCRETE_INPUT(NODE_01,1,0x0003,0)
   DISCRETE_555_ASTABLE(NODE_10,NODE_01,12.0,RES_K(1),RES_K(56),CAP_N(10),NODE_NC,type)
   DISCRETE_GAIN(NODE_20,NODE_10,1250)
-  DISCRETE_OUTPUT(NODE_20, 50)
+  /* Unipolar (a 555 swinging 0..12V, x1250: about +7500 of DC while it sounds), hence _AC to correct/center around 0 */
+  DISCRETE_OUTPUT_AC(NODE_20, 50)
 DISCRETE_SOUND_END
 
 MACHINE_DRIVER_START(zac1146)

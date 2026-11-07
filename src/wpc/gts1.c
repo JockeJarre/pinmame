@@ -83,15 +83,18 @@ static SWITCH_UPDATE(GTS1) {
 }
 
 static int GTS1_sw2m(int no) {
+  if (no >= 1000) return no - 1000; // matrix positions without a switch number, see GTS1_m2sw
   if (no < 0) return no + 8;
   else if (no > 77) return no + 7;
   else { no += 1; return (no%10)*8 + no/10; }
 }
 
 static int GTS1_m2sw(int col, int row) {
-  if (col < 1) return -9 + row;
-  else if (col > 8) return col*8 + row-7;
-  else return row*10+col-1;
+  if (col < 1) return row - 8;                   // inverse of the no < 0 branch
+  if ((col == 9 && row == 7) || (col == 10 && row < 5))
+    return 1000 + col*8 + row;                   // not reachable from a switch number (unused by the hardware)
+  if (col >= 10) return col*8 + row - 7;         // inverse of the no > 77 branch
+  return row*10 + col - 1;                       // inverse of the 0 <= no <= 77 branch
 }
 
 static WRITE_HANDLER(snd_w) {
@@ -389,7 +392,8 @@ static DISCRETE_SOUND_START(b18555_discInt)
 	DISCRETE_GAIN(NODE_50,NODE_20,1250)
 	DISCRETE_GAIN(NODE_60,NODE_30,1250)
 	DISCRETE_ADDER3(NODE_70,1,NODE_40,NODE_50,NODE_60)
-	DISCRETE_OUTPUT(NODE_70, 50)
+	/* Unipolar (three 555s swinging 0..12V, x1250 and summed: about +7500 of DC per sounding chip), hence _AC to correct/center around 0 */
+	DISCRETE_OUTPUT_AC(NODE_70, 50)
 DISCRETE_SOUND_END
 
 static MACHINE_DRIVER_START(GTS1NS)

@@ -24,8 +24,8 @@
   Sound: 2 Channel Mono Audio
 
   Capcom "Classic" Pins: (Breakshot)
-  Lamp Matrix     = 1 x (8x8 Matrixs) = 64 Lamps - 64 GI Lamps (not directly cpu controlled?)
-  Switch Matrix   = 1 x (8x7 Matrix)  = 56 Switches + 9 Cabinet Switches
+  Lamp Matrix     = 1 x (8x8 Matrixs) = 64 Lamps - 64 GI Lamps
+  Switch Matrix   = 1 x (8x7 Matrix)  = 56 Switches + 9 Cabinet Switches (8 regular switches, slam tilt is overlayed on playfield matrix)
   Solenoids	= 32 Solenoids/Flashers
   Sound: 1 Channel Mono Audio
 
@@ -38,24 +38,24 @@
   11/10/03          - Seem to have found decent IRQ4 freq. to allow KP & FF to fire sols 1 & 2 properly
   11/15/03          - 68306 optimized & true address mappings implemented, major speed improvements!
 
-  Hacks & Issues that need to be looked into:
-  #2) U16 Needs to be better understood and emulated more accurately (should fix IRQ4 timing problems)
-  #3) IRQ4 appears to somehow control timing for 50V solenoids & Lamps in FF&KP, unknown effect in other games
-  #4) Handle opto switches internally? Is this needed?
-  #5) Handle EOS switches internally? Is this needed?
+  Hacks & Issues that needed to be looked into:
+  #2) DONE: U16 Needs to be better understood and emulated more accurately (should fix IRQ4 timing problems): its interrupt controller is
+      emulated since 2024 (u16_r/u16_w), the IRQ4 lines run at the frequencies the game programs; its BLANK signal is still open, see below
+  #3) DONE: IRQ4 appears to somehow control timing for 50V solenoids & Lamps in FF&KP: it is U16's interrupt (#2), set up by the game itself
+      instead of a guessed frequency
+  #4) Not needed: Handle opto switches internally? They are read through the inverted switch mask of each game (capInvSw in capgames.c)
+  #5) Not needed: Handle EOS switches internally? The flippers work without them (tables don't drive them), tables may do so for the switch tests
   #6) More complete M68306 emulation (although it's fairly good already) - could use some optimization
-  #7) Lamps will eventually come on in Kingpin/Flipper Football, why does it take so long? Faster IRQ4 timing will improve response time ( cycles of 2000 for example, but screws up solenoids )
-  #8) Not sure best way to emulate 50V line, see TEST50V_TRYx macros below
-  #9) Firing of 50V solenoids seems sometimes inconsistent in FF&KP, but IRQ4 timing helps correct it
-  #10)How to get varying flipper solenoid strength included and wired to the outside? 
-      i.e. KingPin power meter: http://www.krellan.com/pinball/kingpin/ & http://www.freepatentsonline.com/5655770.html
-      Capcom only used one single type of coils and was able to set the strength by software: It was a nice feature to ease maintenance.
-      This was way better than B/W used to do because you always needed one type of coils and not 5 or 6 different ones.
-      The PowerMeter in King Pin works that way. The lower the power is on the display the lower the strength the flippers is applied.
-      Also see https://m.facebook.com/story.php?story_fbid=2088173937889558&id=1034214746618821
-      -> suggestion: Find mem location (as it's only one machine/ROM version after all!) and use that directly instead of trying to track/map it?
-  #11) Flippers are not implemented.  VPinMAME appears to pass flipper switches through to flipper solenoids (always on).   Actual flipper solenoids
-       seem to give one very latent pulse instead of staying on.
+  #7) DONE: Lamps will eventually come on in Kingpin/Flipper Football, why does it take so long? Since the 2024 rework they come on with
+      the boot, some 4s after power on, so the slam tilt that VPX tables pulse once at the start (for flickering/late lamps) is not needed anymore
+  #8) DONE: Not sure best way to emulate 50V line: since 2024 the 5V/50V lines are measured through their RC filter and comparator as on the
+      board (cc_porta_r), the TEST50V_TRYx experiments are gone
+  #9) DONE: Firing of 50V solenoids seems sometimes inconsistent in FF&KP: with #2 and #8 they fire as the game commands them
+  #10) DONE: How to get varying flipper solenoid strength included and wired to the outside? (i.e. KingPin power meter:
+       http://www.krellan.com/pinball/kingpin/ & http://www.freepatentsonline.com/5655770.html): the flipper coils and their mirrors report the
+       strength while on, for all games, Kingpin's power meter included, see CC_FLIP_BYTE32/CC_FLIP_PATTERN16
+  #11) DONE: Flippers are not implemented: the flipper coils are solenoids 9..12 (power/hold, with their strength), mirrored to PinMAME's
+       flipper outputs, see io_w
 
  [VB 02/01/2024]
  After diving into the schematics and some 68000 disassembler, some changes:
@@ -85,6 +85,7 @@
 #include "core.h"
 #include "capcoms.h"
 #include "sndbrd.h"
+#include "snd_cmd.h"
 
 //Turn off when not testing mpg audio
 #define TEST_MPGAUDIO      0
@@ -105,6 +106,22 @@
 
 // Breakshot has a modified hardware with a single lamp matrix (B), the hardware of the other lamp matrix being used as a switch matrix, allowing to spare the switch board
 #define HAS_SWITCH_BOARD (core_gameData->hw.lampCol > 1)
+
+// Mirror of the flipper coils to PinMAME's flipper outputs (see io_w): 0 (default) mirrors them to the matching side, as
+// tables expect (SolCallback(sLRFlipper) is the right flipper); 1 restores the mapping of the 3.7 development builds,
+// solenoids 9/10/11/12 to the lower right/lower left/upper right/upper left outputs (PinMAME 3.6 reported none of them).
+// In all Capcom games 9 is the left flipper and 10 the right (the solenoid tests' names); 11 is the upper right flipper
+// in Breakshot, Pool Player and Big Bang Bar, while in Flipper Football 11 is the upper left and 12 the upper right (its
+// flipper descriptors in ROM), see MACHINE_INIT(cc). 11/12 are only mirrored where capgames.c declares the upper flipper
+#ifndef CAPCOM_LEGACY_FLIPPER_SWAP
+#define CAPCOM_LEGACY_FLIPPER_SWAP 0
+#endif
+
+// Flipper strength, the duty of the power stroke, reported as the flipper outputs' value while on. Newer firmware (Kingpin,
+// Flipper Football) keeps the strength adjustment as a RAM byte, n of 32 slots; older firmware (Pinball Magic, Airborne,
+// Breakshot, Big Bang Bar, Pool Player) writes the adjustment (2..16) as a 16 slot pattern into the coil's RAM descriptor, n bits set
+#define CC_FLIP_BYTE32    1
+#define CC_FLIP_PATTERN16 2
 
 #define CC_ZCFREQ		120			/* Zero cross frequency for 60Hz */
 
@@ -129,6 +146,10 @@ static struct {
   int first_sound_reset;
   int lampAColDisable, lampBColDisable;
   UINT16 lampA, lampB;
+  UINT32 flipStrengthAddr[4]; // where the strength of solenoids 9..12 is (see CC_FLIP_BYTE32), 0 if unknown
+  int flipStrengthKind[4];    // CC_FLIP_BYTE32 or CC_FLIP_PATTERN16
+  UINT32 flipStrengthProg[4]; // CC_FLIP_BYTE32: the strength in the coil's generated power stroke code (what it really uses), 0 if unknown
+  int flipMirror[4];          // PinMAME flipper output each of solenoids 9..12 is mirrored to (CAPCOM_LEGACY_FLIPPER_SWAP)
 
   mame_timer* u16DMDtimer;
   UINT8 pwmDmdFrames[256 * 8 * 3];
@@ -148,6 +169,42 @@ static INTERRUPT_GEN(cc_vblank) {
   /*-- update leds (they are PWM faded, so uses physic output) --*/
   coreGlobals.diagnosticLed = (coreGlobals.physicOutputState[CORE_MODOUT_LAMP0 + 8 * 8 + (core_gameData->hw.lampCol - 1) * 8    ].value >= 0.5f ? 1 : 0)
                             | (coreGlobals.physicOutputState[CORE_MODOUT_LAMP0 + 8 * 8 + (core_gameData->hw.lampCol - 1) * 8 + 1].value >= 0.5f ? 2 : 0);
+
+  /*-- flipper strength: the flipper coils (solenoids 9..12) and their mirrors report the duty of their power stroke while on, instead of 1 (see CC_FLIP_BYTE32) --*/
+  for (int i = 0; i < 4; i++)
+    if (locals.flipStrengthAddr[i]) {
+      const UINT32 a = locals.flipStrengthAddr[i];
+      float strength;
+      if (locals.flipStrengthKind[i] == CC_FLIP_PATTERN16) {
+        int n = 0;
+        for (UINT16 w = ramptr[a >> 1]; w; w &= w - 1)
+          n++;
+        strength = (float)n / 16.f;
+      }
+      else {
+        // the game compiles the strength into the coil's power stroke code (move.b #n,...) whenever it (re-)registers the coil,
+        // also from other sources than the adjustment (Kingpin's power meter), so prefer that one
+        const UINT32 p = locals.flipStrengthProg[i];
+        const int n = (p && ramptr[(p >> 1) - 1] == 0x11fc) ? (ramptr[p >> 1] & 0xFF) : ((ramptr[a >> 1] >> ((a & 1) ? 0 : 8)) & 0xFF);
+        strength = (float)(n < 2 ? 2 : n > 32 ? 32 : n) / 32.f; // as the ROM clamps it
+      }
+      if (strength <= 0.f) // not set up yet, or caught while the game rewrites it: keep the last value
+        continue;
+      coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + 9 - 1 + i].state.sol.onValue = strength;
+      if (locals.flipMirror[i]) {
+        coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + locals.flipMirror[i] - 1].state.sol.onValue = strength; // power
+        coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + locals.flipMirror[i]    ].state.sol.onValue = strength; // hold
+      }
+    }
+
+  /*-- flipper bits from the flipper outputs, integrated like the other coils' binary state (on above 0: the strength may
+       be below half); the games name their flipper coils (FLIP_SOL), so core_updateSw leaves the bits to the driver --*/
+  core_update_pwm_outputs(CORE_MODOUT_SOL0 + sURFlipPow - 1, sLLFlipPow - sURFlipPow + 1);
+  coreGlobals.solenoids2 = (coreGlobals.solenoids2 & ~0xFFu)
+                         | (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + sLRFlipPow - 1].value > 0.f ? 0x01 : 0)
+                         | (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + sLLFlipPow - 1].value > 0.f ? 0x04 : 0)
+                         | (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + sURFlipPow - 1].value > 0.f ? 0x10 : 0)
+                         | (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + sULFlipPow - 1].value > 0.f ? 0x40 : 0);
 
   core_updateSw(TRUE);
 }
@@ -328,8 +385,8 @@ static WRITE16_HANDLER(cc_portb_w) {
 //                                 B use frequency defined by writing at 40C00404
 //                                 A use frequency defined by writing at 40C00402
 //                             . ??? are unknown. Breakshot, Flipper Football & KingPin always set them to 011, except if an auxiliary board is present, then it is set to 111
-//   $40C00402  u16IRQ4line1f  is IRQ4 line 1 frequency (0x1000 - (data & 0x0FFF)) * 88.6489 CPU cycles
-//   $40C00404  u16IRQ4line2f  is IRQ4 line 2 frequency (0x1000 - (data & 0x0FFF)) * 88.6489 CPU cycles
+//   $40C00402  u16IRQ4line1f  is IRQ4 line 1 frequency (0x1000 - (data & 0x0FFF)) * 6.334 DBF loop passes (88.675 cycles with 14 cycle passes)
+//   $40C00404  u16IRQ4line2f  is IRQ4 line 2 frequency (0x1000 - (data & 0x0FFF)) * 6.334 DBF loop passes (88.675 cycles with 14 cycle passes)
 //
 // No other access were witnessed, so others are likely unused.
 //
@@ -348,6 +405,17 @@ static WRITE16_HANDLER(cc_portb_w) {
 #else
 #define LOG_U16(x)
 #endif
+
+// The U16 periods are known from the ROM startup tests, which count passes of a DBF D0,* loop until the interrupt (IRQ1 and IRQ4
+// tests at $1009202C and $10092160 in Pinball Magic): they are kept in passes and converted with the 68306 core's cost of a pass,
+// so that they keep matching with the old cycle counts (14 cycles) as with the data sheet ones (10 cycles, M68K_CYCLE_FIX)
+#define U16_PASSES(passes)       TIME_IN_SEC((passes) * m68000_dbcc_loop_cycles() / (double)CPU_CLOCK)
+#define U16_IRQ4_PASSES_PER_UNIT (88.675 / 14.) // IRQ4 lines 1 & 2: passes per unit of (0x1000 - frequency register)
+
+// TODO with the data sheet cycle counts (M68K_CYCLE_FIX), express the U16 timings in CPU clocks instead: the DMD row clock measured on
+// hardware is CPU_CLOCK / 1024 and a U16 unit is 1/16 row, i.e. exactly 64 clocks (6.334 passes of 10 cycles = 63.3 clocks today, and
+// IRQ4 line 3, the DMD VBlank, then matches the measured 4 frame group within 1%). Not possible with the old cycle counts, whose
+// 14 cycle passes would fail the startup tests. The IRQ1 periods would need the same review (and its 120/165 and zero cross hacks)
 
 static void cc_u16irq1(int data) {
   //if (!locals.irq1State) printf(">> Raise IRQ1\n");
@@ -455,9 +523,10 @@ static WRITE16_HANDLER(u16_w) {
 
     case 0x200: { // IRQ1 Frequency, IRQ4 line 1/2/3 enable
       LOG_U16(("PC %08x - U16w IRQ1 f=%x IRQ4=%x [data@%03x=%04x] (%04x)\n", activecpu_get_pc(), (data >> 6) & 3, (data & 0x7) ^ 4, offset, data, mem_mask));
-      //static const int irq1NCycles[] = { 22662, 11308, 5631, 2789 }; // Number of CPU cycles taken from startup check disassembly (value without IRQ1 adjusting on ACK)
-      static const int irq1NCycles[] = { 22602, 11248, 5571, 2729 }; // Number of CPU cycles taken from startup check disassembly (value with IRQ1 adjusting on ACK)
-      locals.u16IRQ1Period = TIME_IN_SEC(irq1NCycles[(data >> 6) & 3] / (double)CPU_CLOCK);
+      // Number of DBF loop passes taken from startup check disassembly, given as CPU cycles of 14 cycle passes
+      //static const double irq1Passes[] = { 22662 / 14., 11308 / 14., 5631 / 14., 2789 / 14. }; // (value without IRQ1 adjusting on ACK)
+      static const double irq1Passes[] = { 22602 / 14., 11248 / 14., 5571 / 14., 2729 / 14. }; // (value with IRQ1 adjusting on ACK)
+      locals.u16IRQ1Period = U16_PASSES(irq1Passes[(data >> 6) & 3]);
       timer_adjust(locals.u16IRQ1timer, locals.u16IRQ1Adjust ? (locals.u16IRQ1Period * 120.0 / 165.0) : locals.u16IRQ1Period, 0, locals.u16IRQ1Adjust ? (locals.u16IRQ1Period * 120.0 / 165.0) : locals.u16IRQ1Period);
       timer_adjust(locals.u16IRQ4Line1timer, locals.u16IRQ4Line1Period, 0, locals.u16IRQ4Line1Period);
       timer_adjust(locals.u16IRQ4Line2timer, locals.u16IRQ4Line2Period, 0, locals.u16IRQ4Line2Period);
@@ -469,12 +538,12 @@ static WRITE16_HANDLER(u16_w) {
     }
     case 0x201: { // IRQ4 Line 1 frequency
       LOG_U16(("PC %08x - U16w IRQ4 f1=%03x     [data@%03x=%04x] (%04x)\n", activecpu_get_pc(), data, offset, data, mem_mask));
-      locals.u16IRQ4Line1Period = TIME_IN_SEC(((0x1000 - (data & 0x0FFF)) * 88.675) / (double)CPU_CLOCK);
+      locals.u16IRQ4Line1Period = U16_PASSES((0x1000 - (data & 0x0FFF)) * U16_IRQ4_PASSES_PER_UNIT);
       break;
     }
     case 0x202: { // IRQ4 Line 2 frequency
       LOG_U16(("PC %08x - U16w IRQ4 f2=%03x     [data@%03x=%04x] (%04x)\n", activecpu_get_pc(), data, offset, data, mem_mask));
-      locals.u16IRQ4Line2Period = TIME_IN_SEC(((0x1000 - (data & 0x0FFF)) * 88.675) / (double)CPU_CLOCK);
+      locals.u16IRQ4Line2Period = U16_PASSES((0x1000 - (data & 0x0FFF)) * U16_IRQ4_PASSES_PER_UNIT);
       break;
     }
     default:
@@ -648,25 +717,24 @@ static WRITE16_HANDLER(io_w) {
     //Sols: 1-8 (hi byte) & 17-24 (lo byte)
     case 0x20000c:
       soldata = core_revword(data^0xffff);
-      coreGlobals.pulsedSolState = (soldata & 0x00ff)<<16;
-      coreGlobals.pulsedSolState = (soldata & 0xff00)>>8;
+      coreGlobals.pulsedSolState = (coreGlobals.pulsedSolState & 0xFF00FF00u) | ((soldata & 0x00ff)<<16) | ((soldata & 0xff00)>>8);
       core_write_pwm_output_8b(CORE_MODOUT_SOL0 + 16,  soldata       & 0xFF);
       core_write_pwm_output_8b(CORE_MODOUT_SOL0,      (soldata >> 8) & 0xFF);
       break;
     //Sols: 9-16 (hi byte) & 24-32 (lo byte)
     case 0x20000d:
       soldata = core_revword(data^0xffff);
-      coreGlobals.pulsedSolState = (soldata & 0x00ff)<<24;
-      coreGlobals.pulsedSolState = (soldata & 0xff00)>>0;
+      coreGlobals.pulsedSolState = (coreGlobals.pulsedSolState & 0x00FF00FFu) | ((UINT32)(soldata & 0x00ff)<<24) | (soldata & 0xff00);
       core_write_pwm_output_8b(CORE_MODOUT_SOL0 + 24,  soldata       & 0xFF);
       core_write_pwm_output_8b(CORE_MODOUT_SOL0 +  8, (soldata >> 8) & 0xFF);
-      // Mirror solenoids 8..11 to PinMAME standard flipper solenoids outputs (8/9 are used for lower flippers and 10/11 are either used for flippers or modulated lights)
-      // This should be removed as this push the legacy PinMAME specific mapping forward while it does not correspond to manuals or any other reference
-      // System using this driver must use the native output 8..11. But as it breaks existing DOF config, we still maintain this hack for the sake of backward compatibility.
-      core_write_pwm_output(CORE_MODOUT_SOL0 + sLRFlipPow - 1, 1, (soldata >> 8) & 0x01);
-      core_write_pwm_output(CORE_MODOUT_SOL0 + sLLFlipPow - 1, 1, (soldata >> 9) & 0x01);
-      core_write_pwm_output(CORE_MODOUT_SOL0 + sURFlipPow - 1, 1, (soldata >> 10) & 0x01);
-      core_write_pwm_output(CORE_MODOUT_SOL0 + sULFlipPow - 1, 1, (soldata >> 11) & 0x01);
+      // Mirror the flipper coils (solenoids 9..12) to PinMAME's flipper outputs, which tables (sLRFlipper etc.) and DOF use;
+      // the coils stay on 9..12 too. Each goes to the power output locals.flipMirror (0: none, see CAPCOM_LEGACY_FLIPPER_SWAP)
+      // and the hold output after it, as binary mode reports the hold coil on with either coil
+      for (int i = 0; i < 4; i++)
+        if (locals.flipMirror[i]) {
+          core_write_pwm_output(CORE_MODOUT_SOL0 + locals.flipMirror[i] - 1, 1, (soldata >> (8 + i)) & 0x01);
+          core_write_pwm_output(CORE_MODOUT_SOL0 + locals.flipMirror[i]    , 1, (soldata >> (8 + i)) & 0x01);
+        }
       break;
 
     ////////////////////////////// SWITCH0 => 16 Cabinet switches
@@ -674,6 +742,15 @@ static WRITE16_HANDLER(io_w) {
 
     default:
       DBGLOG(("PC%08x - io_w: [%08x] (%04x) = %x\n",activecpu_get_pc(),offset,mem_mask,data));
+  }
+}
+
+/* the strength sources of flipper solenoids 9..12 (0: none), see CC_FLIP_BYTE32 */
+static void cc_set_flip_strength(int kind, UINT32 sol9, UINT32 sol10, UINT32 sol11, UINT32 sol12) {
+  const UINT32 addr[4] = { sol9, sol10, sol11, sol12 };
+  for (int i = 0; i < 4; i++) {
+    locals.flipStrengthAddr[i] = addr[i];
+    locals.flipStrengthKind[i] = kind;
   }
 }
 
@@ -713,9 +790,9 @@ static MACHINE_INIT(cc) {
   //Copy 1st 0x100 bytes of rom into RAM for vector table
   memcpy(ramptr, memory_region(REGION_USER1), 0x100);
 
-  core_dmd_pwm_init(core_gameData->lcdLayout, CORE_DMD_PWM_FILTER_WPC, CORE_DMD_PWM_COMBINER_SUM_1_2_1, 1);
   const int dmdHeight = core_gameData->lcdLayout->start;
-  timer_pulse(dmdHeight / (16279.409 / 3.0), 0, cc_dmd_rasterizer_sync); // 16.279kHz is the row clock, leading to 508.73Hz for 128x32 / 254.36Hz for 256x64, rasterizer produces 3 frames
+  core_dmd_pwm_init(core_gameData->lcdLayout, dmdHeight > 32 ? CORE_DMD_PWM_FILTER_CAPCOM_256x64 : CORE_DMD_PWM_FILTER_CAPCOM_128x32, CORE_DMD_PWM_COMBINER_SUM_1_2_1, 1);
+  timer_pulse(dmdHeight / (16279.409 / 4.0), 0, cc_dmd_rasterizer_sync); // 16.279kHz is the row clock, leading to 508.73Hz for 128x32 / 254.36Hz for 256x64, rasterizer produces 4 frames
 
   // Initialize outputs
   coreGlobals.nLamps = 64 + core_gameData->hw.lampCol * 8; // Lamp Matrix A & B, +1 col for PWM diag LED
@@ -727,41 +804,91 @@ static MACHINE_INIT(cc) {
   coreGlobals.hasModulatedFlippers = TRUE;
   core_set_pwm_output_type(CORE_MODOUT_SOL0, coreGlobals.nSolenoids, CORE_MODOUT_SOL_2_STATE);
   core_set_pwm_output_type(CORE_MODOUT_SOL0 + CORE_FIRSTCUSTSOL - 1, 1, CORE_MODOUT_SOL_CUSTOM); // GameOn solenoid for Fast Flips
+  // Flipper outputs mirrored from solenoids 9..12 (see io_w): not fast on, which would write slot & 31 of solenoids2, the
+  // lower flipper bits for 33..36; cc_vblank sets the flipper bits
+  core_set_pwm_output_type(CORE_MODOUT_SOL0 + sURFlipPow - 1, 4, CORE_MODOUT_LEGACY_SOL_2_STATE);
+  core_set_pwm_output_type(CORE_MODOUT_SOL0 + sLRFlipPow - 1, 4, CORE_MODOUT_LEGACY_SOL_2_STATE);
   // Game specific hardware
   const struct GameDriver* rootDrv = Machine->gamedrv;
   while (rootDrv->clone_of && (rootDrv->clone_of->flags & NOT_A_DRIVER) == 0)
     rootDrv = rootDrv->clone_of;
   const char* const gn = rootDrv->name;
+  const char* const set = Machine->gamedrv->name;
+  // Flipper mirror: 9 left, 10 right, 11 upper right (Breakshot, Pool Player, Big Bang Bar), legacy swaps the lower ones
+  locals.flipMirror[0] = CAPCOM_LEGACY_FLIPPER_SWAP ? sLRFlipPow : sLLFlipPow;
+  locals.flipMirror[1] = CAPCOM_LEGACY_FLIPPER_SWAP ? sLLFlipPow : sLRFlipPow;
+  locals.flipMirror[2] = sURFlipPow;
+  locals.flipMirror[3] = sULFlipPow;
   // For flashers, Capcom uses #89 bulb wired through a STP20N10L Mosfet, 0.02 ohms resistor to a 20V DC source
   // which is very similar to what Williams uses on WPC hardware, so just uses CORE_MODOUT_BULB_89_20V_DC_WPC
   if (strncasecmp(gn, "abv", 3) == 0) { // Airborne
-    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 20 - 1, 8, CORE_MODOUT_BULB_89_20V_DC_WPC);
-  } 
+    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 20 - 1, 9, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    // "FLIPPER STRENGTH" (2..16, factory 12) as the power pattern of the left and right flipper descriptors
+    cc_set_flip_strength(CC_FLIP_PATTERN16, 0x397e, 0x3996, 0, 0);
+  }
   else if (strncasecmp(gn, "bbb", 3) == 0) { // Big Bang Bar
     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 21 - 1, 6, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    // "FLIPPER STRENGTH" (2..16, factory 13) as the power pattern of the left, right and upper flipper descriptors
+    cc_set_flip_strength(CC_FLIP_PATTERN16, 0x39a4, 0x39bc, 0x39d4, 0);
   }
-  else if (strncasecmp(gn, "bsv", 3) == 0) { // Breakshot
-    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 28 - 1, 5, CORE_MODOUT_BULB_89_20V_DC_WPC); // Center pocket Flasher
+  else if (strncasecmp(gn, "bsv", 3) == 0) { // Breakshot (and its clone Pool Player)
+    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 28 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_WPC); // Center pocket Flasher
     // core_set_pwm_output_type(CORE_MODOUT_SOL0 + 27 - 1, 5, CORE_MODOUT_BULB_89_20V_DC_WPC); // Plunger Flasher (appears in doc but was not kept in production)
+    // "FLIPPER STRENGTH" and "U.R. FLIPPER STRENGTH" (2..16, factory 13) as the power pattern of the left/right and upper
+    // right flipper descriptors; the beta 1.05 has them elsewhere, and one setting for all three
+    if (strcmp(set, "bsb105") == 0)
+      cc_set_flip_strength(CC_FLIP_PATTERN16, 0x3996, 0x39ae, 0x39c6, 0);
+    else
+      cc_set_flip_strength(CC_FLIP_PATTERN16, 0x39a2, 0x39ba, 0x39d2, 0);
   }
   else if (strncasecmp(gn, "ffv", 3) == 0) { // Flipper Football
     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 28 - 1, 5, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    // Flipper strength adjustments "L./R./L.UPR./R.UPR. Flipper Strength" (4..32, factory 18 and 14), the power stroke's
+    // duty in 32nds, read by the flipper descriptors in ROM (1.04: 0x10ce8de4 solenoid 9 left, 0x10ce8e00 10 right,
+    // 0x10ce8df2 11 upper left, 0x10ce8e0e 12 upper right); each version keeps them at another address
+    if (strcmp(set, "ffv104") == 0)
+      cc_set_flip_strength(CC_FLIP_BYTE32, 0x40458, 0x40459, 0x4045a, 0x4045b);
+    else if (strcmp(set, "ffv103") == 0)
+      cc_set_flip_strength(CC_FLIP_BYTE32, 0x4045c, 0x4045d, 0x4045e, 0x4045f);
+    else if (strcmp(set, "ffv101") == 0)
+      cc_set_flip_strength(CC_FLIP_BYTE32, 0x4141e, 0x4141f, 0x41420, 0x41421);
+    // 11 is the upper left flipper, 12 the upper right
+    locals.flipMirror[2] = CAPCOM_LEGACY_FLIPPER_SWAP ? sURFlipPow : sULFlipPow;
+    locals.flipMirror[3] = CAPCOM_LEGACY_FLIPPER_SWAP ? sULFlipPow : sURFlipPow;
   }
   else if (strncasecmp(gn, "kpb", 3) == 0) { // KingPin
     // To be checked since this is from VPX table (did not find a manual for this one)
     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 18 - 1,  2, CORE_MODOUT_BULB_89_20V_DC_WPC);
     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 21 - 1, 11, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    // Flipper strength adjustments B1.16A/B "L./R. Flipper Strength" (4..32, factory 25), the power stroke's duty in 32nds;
+    // read by the flipper descriptors in ROM at 0x100b8470 (solenoid 9, left) and 0x100b847e (solenoid 10, right).
+    // The power meter (0x10068982) registers RAM copies of them, pointing to its own draining strength (0x5e50/0x5e51),
+    // so the strength is read from the coils' power stroke code at 0x4d8/0x730 (+0x0a), where the registration
+    // (0x10092516) compiles it in as move.b #n,... (the immediate at +0x24)
+    cc_set_flip_strength(CC_FLIP_BYTE32, 0x40866, 0x40867, 0, 0);
+    locals.flipStrengthProg[0] = 0x4d8 + 0x24;
+    locals.flipStrengthProg[1] = 0x730 + 0x24;
   }
   else if (strncasecmp(gn, "pmv", 3) == 0) { // Pinball Magic
-    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 21 - 1, 11, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    core_set_pwm_output_type(CORE_MODOUT_SOL0 + 21 - 1, 12, CORE_MODOUT_BULB_89_20V_DC_WPC);
+    // "FLIPPER STRENGTH" (2..16, factory 10) as the power pattern of the left and right flipper descriptors
+    cc_set_flip_strength(CC_FLIP_PATTERN16, 0x3958, 0x3970, 0, 0);
   }
-  // Defaults to 2 state legacy integrator for better backward compatibility
+  // No mirror to an upper flipper the game doesn't declare (capgames.c): 11/12 drive other devices there
+  for (int i = 2; i < 4; i++)
+    if (!(core_gameData->hw.flippers & FLIP_SOL(locals.flipMirror[i] == sURFlipPow ? FLIP_UR : FLIP_UL)))
+      locals.flipMirror[i] = 0;
+  // Defaults to 2 state legacy integrator for better backward compatibility, but keep the
+  // per-game #89 flasher bulbs on the bulb integrator so they don't strobe
   if ((options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) == 0)
      for (int i = 0; i < coreGlobals.nSolenoids; i++)
-        if (coreGlobals.physicOutputState[i].type != CORE_MODOUT_SOL_2_STATE)
-           core_set_pwm_output_type(CORE_MODOUT_SOL0, 1, CORE_MODOUT_LEGACY_SOL_2_STATE);
+        if (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].type != CORE_MODOUT_SOL_2_STATE
+              && coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].type != CORE_MODOUT_BULB_89_20V_DC_WPC)
+           core_set_pwm_output_type(CORE_MODOUT_SOL0 + i, 1, CORE_MODOUT_LEGACY_SOL_2_STATE);
+  // All matrix lamps, up to the diagnostic LED column: 64 with matrix B only (Breakshot, Pool Player, lampCol 1), 128 with
+  // both matrices (lampCol 9; 120 for Flipper Football 1.03, lampCol 8). The diagnostic LEDs keep their LED integration
   if ((options.usemodsol & CORE_MODOUT_ENABLE_PHYSOUT_LAMPS) == 0)
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0, 80 /*coreGlobals.nLamps*/, CORE_MODOUT_LEGACY_SOL_2_STATE);
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0, coreGlobals.nLamps - 8, CORE_MODOUT_LEGACY_SOL_2_STATE);
   if ((options.usemodsol & CORE_MODOUT_ENABLE_PHYSOUT_GI) == 0)
      core_set_pwm_output_type(CORE_MODOUT_GI0, coreGlobals.nGI, CORE_MODOUT_LEGACY_SOL_2_STATE);
 
@@ -773,12 +900,12 @@ static MACHINE_INIT(cc) {
   locals.u16IRQ4Line2timer = timer_alloc(cc_u16irq4line2);
   locals.u16IRQ4Line3timer = timer_alloc(cc_u16irq4line3);
   // defaults IRQ periods
-  locals.u16IRQ1Period = TIME_IN_SEC(22668 / (double)CPU_CLOCK);
-  locals.u16IRQ4Line1Period = TIME_IN_SEC(((0x1000 - (0x0800 & 0x0FFF)) * 88.675) / (double)CPU_CLOCK);
-  locals.u16IRQ4Line2Period = TIME_IN_SEC(((0x1000 - (0x0800 & 0x0FFF)) * 88.675) / (double)CPU_CLOCK);
+  locals.u16IRQ1Period = U16_PASSES(22668 / 14.);
+  locals.u16IRQ4Line1Period = U16_PASSES((0x1000 - (0x0800 & 0x0FFF)) * U16_IRQ4_PASSES_PER_UNIT);
+  locals.u16IRQ4Line2Period = U16_PASSES((0x1000 - (0x0800 & 0x0FFF)) * U16_IRQ4_PASSES_PER_UNIT);
   // Flipper Football frequency for IRQ4 Line 3 is half of other games => likely DMD vblank since DMD has twice more lines (so 45.9Hz for FF, 91.8Hz for others)
   int defaultLine3 = (core_gameData->hw.gameSpecific1 == 9 || core_gameData->hw.gameSpecific1 == 12) ? 0x0000 : 0x0800;
-  locals.u16IRQ4Line3Period = TIME_IN_SEC(((0x1000 - (defaultLine3 & 0x0FFF)) * 88.675) / (double)CPU_CLOCK);
+  locals.u16IRQ4Line3Period = U16_PASSES((0x1000 - (defaultLine3 & 0x0FFF)) * U16_IRQ4_PASSES_PER_UNIT);
 
 #if TEST_MPGAUDIO
   //Freeze cpu so it won't slow down the emulation
@@ -863,17 +990,31 @@ static NVRAM_HANDLER(cc) {
 }
 
 static int cc_sw2m(int no) {
+  //  1.. 8: col 9 => base cabinet switch (all games)
   if (no < 9)
-    return no + 71;
-  else if (no < 81)
-    return no - 9;
-  return no + 7;
+    return (no - 1) + 9 * 8;
+  //  9..80: col 0..8 => 0 is cabinet switch, 1..8 is playfield matrix
+  if (no < 81)
+    return (no - 9);
+  // 81..88: col 11 => PinMAME internal flipper virtual switch state
+  if (no < 89)
+     return (no - 81) + 11 * 8;
+  // 89..96: col 10 => unused but mapped as CORE_STDSWCOLS sets a default to 12 columns
+  return (no - 89) + 10 * 8;
 }
 
 static int cc_m2sw(int col, int row) {
+  // col 0..8 => 0 is cabinet switch, 1..8 is playfield matrix => 9..80
+  if (col < 9)
+     return 9 + row + col * 8;
+  // col 9 => base cabinet switch (all games) => 1..8
   if (col == 9)
-    return row + 1;
-  return col*8 + row + 9;
+     return 1 + row;
+  // col 10 => unused but mapped as CORE_STDSWCOLS sets a default to 12 columns => 89..96
+  if (col == 10)
+     return 89 + row;
+  // col 11 => PinMAME internal flipper virtual switch state => 81..88
+  return 81 + row;
 }
 
 /*
@@ -946,11 +1087,14 @@ MACHINE_DRIVER_END
 // Readings and reverse engineering shows that the chip read data from RAM and rasterizes it, creating 4 PWM frames.
 // Each line is made of 256 dots, each dot being 2 bits. On 128x32 displays, the first 128 dots are ignored by the display.
 // The rasterizer converts the 2 bit values into 4 PWM frames (leading to 4 shades) but the CPU may also quickly
-// change pages, leading to longer PWM patterns (multiple groups of 3 frames) leading to more shades.
+// change pages, leading to longer PWM patterns (multiple groups of 4 frames) leading to more shades.
 // The (measured) timings are the followings:
 // - 128x32: 1.965ms per frame, 61.417µs per line, dots are 250/250/250/208ns (per group of 4)
 // - 256x64: 3.931ms per frame, 61.417µs per line, dots are 250/250/250/208ns (per group of 4)
 // Therefore we setup a timer with the right timing which decodes the 2 bit data into frames and submit them for PWM integration
+// TODO RAM is read once per group of 4 frames (7.9ms for 128x32, 15.7ms for 256x64), while the U16 reads it for each frame, so the
+// quick page toggles of the CPU (2ms) are only partly seen. Running the timer once per frame and rasterizing the next frame of the
+// 0,1,2,1 sequence from RAM each time would match the hardware (to be validated on an animation using such page toggles)
 static void cc_dmd_rasterizer_sync(int param) {
    const int dmdWidth = core_gameData->lcdLayout->length / 8;
    const int dmdHeight = core_gameData->lcdLayout->start;
@@ -985,15 +1129,16 @@ static void cc_dmd_rasterizer_sync(int param) {
          *pwm2++ = lum0 & lum1;
       }
    }
-   // U16 rasterizer decodes and produces 4 frames with the following order: 0,1,2,1 leading to 0 / 25 / 50 / 100 luminance levels as the PWM patterns are the followings:
-   // 0 => 0 / 0 / 0 / 0
-   // 1 => 1 / 0 / 0 / 0
-   // 2 => 0 / 1 / 0 / 1
-   // 3 => 1 / 1 / 1 / 1
+   // U16 rasterizer produces 4 frames per cycle; submitted in the order PWM0, PWM2, PWM1, PWM2 they give 0 / 25 / 50 / 100% luminance
+   // (see recordings on real hardware https://github.com/PPUC/dmdreader/tree/ppuc/logicanalyzer):
+   // 0 => 0 / 0 / 0 / 0 - PWM0 = 0 / PWM1 = 0 / PWM2 = 0
+   // 1 => 1 / 0 / 0 / 0 - PWM0 = 1 / PWM1 = 0 / PWM2 = 0
+   // 2 => 1 / 0 / 1 / 0 - PWM0 = 1 / PWM1 = 1 / PWM2 = 0 (the recordings show 0 / 1 / 0 / 1: the same 50%, the other phase)
+   // 3 => 1 / 1 / 1 / 1 - PWM0 = 1 / PWM1 = 1 / PWM2 = 1
    core_dmd_submit_frame(core_gameData->lcdLayout, &locals.pwmDmdFrames[0 * 256 * 8], 1); // PWM0
-   core_dmd_submit_frame(core_gameData->lcdLayout, &locals.pwmDmdFrames[1 * 256 * 8], 1); // PWM1
    core_dmd_submit_frame(core_gameData->lcdLayout, &locals.pwmDmdFrames[2 * 256 * 8], 1); // PWM2
    core_dmd_submit_frame(core_gameData->lcdLayout, &locals.pwmDmdFrames[1 * 256 * 8], 1); // PWM1
+   core_dmd_submit_frame(core_gameData->lcdLayout, &locals.pwmDmdFrames[2 * 256 * 8], 1); // PWM2
 }
 
 // Goofy Hoops - using Q-Sound chip and different memory / port mapping on 68306 MPU 
@@ -1002,6 +1147,48 @@ static data16_t *rom_base2;
 
 static void romstar_irq1(int data) {
   cpu_set_irq_line(0, MC68306_IRQ_1, PULSE_LINE);
+}
+
+// Track Sound Commands:
+
+/* Goofy Hoops has no explicit sound board or commands: the 68306 drives the QSound chip with a sequencer
+   of its own. The game plays an effect with play_sfx(sequence, pan, channel) and a song with
+   play_song(song); both keep what they play in RAM for the sequencer's interrupt, which advances it
+   itself:
+   - play_sfx stores the sequence (one past its priority byte) in the channel's structure, at 4 bytes
+     from its start (channels at $99C, 18 bytes each);
+   - play_song stores the song's address in $B16.
+   The address of the sequence or song is the sound command. The two stores (a move.l from A0) are
+   found in the program, so that only these instructions count */
+#define ROMSTAR_CMD_START 0x0990
+#define ROMSTAR_CMD_END   0x0b3f
+static struct { UINT32 sfxPc, songPc; } romstarCmd;
+
+static WRITE16_HANDLER(romstar_cmd_w) {
+  const int addr = ROMSTAR_CMD_START + offset * 2;
+  const UINT32 pc = activecpu_get_previouspc();
+  COMBINE_DATA(&ramptr[ROMSTAR_CMD_START / 2 + offset]);
+  if (pc == romstarCmd.sfxPc && (addr - 0x99c) % 0x12 == 6) // the low word of the sequence pointer
+    snd_cmd_log(0, ((ramptr[addr / 2 - 1] << 16) | ramptr[addr / 2]) - 1);
+  else if (pc == romstarCmd.songPc && addr == 0xb18) // the low word of the song pointer
+    snd_cmd_log(0, (ramptr[addr / 2 - 1] << 16) | ramptr[addr / 2]);
+}
+
+static void romstar_findSounds(void) {
+  // "move.l A0,($4,A1); move.l A0,(A1); move.w #1,($c,A1)" and "move.l A0,$b1a.w; move.l A0,$b16.w"
+  static const UINT16 sfx[] = { 0x2348, 0x0004, 0x2288, 0x337c, 0x0001, 0x000c };
+  static const UINT16 song[] = { 0x21c8, 0x0b1a, 0x21c8, 0x0b16 };
+  const UINT16 *rom = (const UINT16 *)memory_region(REGION_USER1);
+  int i;
+  memset(&romstarCmd, 0, sizeof(romstarCmd));
+  for (i = 0; i < 0x80000 - 8; i++) {
+    if (!romstarCmd.sfxPc && !memcmp(rom + i, sfx, sizeof(sfx)))
+      romstarCmd.sfxPc = 0x10000000 + 2 * i;
+    else if (!romstarCmd.songPc && !memcmp(rom + i, song, sizeof(song)))
+      romstarCmd.songPc = 0x10000000 + 2 * i + 4;
+  }
+  if (romstarCmd.sfxPc && romstarCmd.songPc)
+    install_mem_write16_handler(0, ROMSTAR_CMD_START, ROMSTAR_CMD_END, romstar_cmd_w);
 }
 
 static MACHINE_INIT(romstar) {
@@ -1016,15 +1203,17 @@ static MACHINE_INIT(romstar) {
   //Init soundboard (needed for sound commander to work)
   sndbrd_0_init(core_gameData->hw.soundBoard, CAPCOMS_CPUNO, memory_region(CAPCOMS_ROMREGION),NULL,NULL);
 
+  romstar_findSounds();
+
   //IRQ1 clock - trying to come as near as possible to the real thing
   timer_pulse(TIME_IN_HZ(970), 0, romstar_irq1);
 
   //IRQ4 clock - might be unused, still pulse it because we don't know what that U8 chip does...
   /* FIXME timer_pulse(TIME_IN_HZ(100), 0, cc_u16irq4); */
   
-  core_dmd_pwm_init(core_gameData->lcdLayout, CORE_DMD_PWM_FILTER_WPC, CORE_DMD_PWM_COMBINER_SUM_1_2_1, 1);
   const int dmdHeight = core_gameData->lcdLayout->start;
-  timer_pulse(dmdHeight / (16279.409 / 3.0), 0, cc_dmd_rasterizer_sync); // 16.279kHz is the row clock, leading to 508.73Hz for 128x32 / 254.36Hz for 256x64, rasterizer produces 3 frames
+  core_dmd_pwm_init(core_gameData->lcdLayout, dmdHeight > 32 ? CORE_DMD_PWM_FILTER_CAPCOM_256x64 : CORE_DMD_PWM_FILTER_CAPCOM_128x32, CORE_DMD_PWM_COMBINER_SUM_1_2_1, 1);
+  timer_pulse(dmdHeight / (16279.409 / 4.0), 0, cc_dmd_rasterizer_sync); // 16.279kHz is the row clock, leading to 508.73Hz for 128x32 / 254.36Hz for 256x64, rasterizer produces 4 frames
 
   // FIXME missing physics output definition
 }
@@ -1073,12 +1262,14 @@ static WRITE16_HANDLER(vol_w) {
 }
 
 static WRITE16_HANDLER(disp_w) {
-  if (!offset) locals.dmdRasterizerAddress = 0x00070000 | data;
+  // visible page: 4 KB (one 256x64 frame of 2 bit dots) each, the 16 of them at the top of RAM from 0x70000
+  if (!offset) locals.dmdRasterizerAddress = (UINT32)((0x70 | data) & 0xFF) << 12;
 }
 
 static WRITE16_HANDLER(sol_w) {
   locals.solenoids |= data << (offset * 8);
-  coreGlobals.solenoids = locals.solenoids;
+  // Switch on at once, off at the next VBlank: assigning the accumulator would drop the outputs not written yet since the last VBlank
+  coreGlobals.solenoids |= data << (offset * 8);
 }
 
 static WRITE16_HANDLER(lamp_w) {

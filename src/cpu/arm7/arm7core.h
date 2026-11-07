@@ -79,6 +79,7 @@ enum
 	data8_t pendingAbtP; \
 	data8_t pendingUnd; \
 	data8_t pendingSwi; \
+	int prev_cpsr_mode; /* SwitchMode's bank-swap anchor: mode whose banked regs are currently swapped INTO the active window */ \
 	struct jit_ctl *jit; \
 	void *ajit;
 
@@ -369,6 +370,9 @@ enum
 #define GET_MODE_REGISTER(mode, reg)	GetModeRegister(mode, reg)
 #define SET_MODE_REGISTER(mode, reg, val)  SetModeRegister(mode, reg, val)
 #define ARM7_CHECKIRQ			arm7_check_irq_state()
+// Whether ARM7_CHECKIRQ would vector now: a cheap test before the call
+#define ARM7_EXCEPTION_DUE		(ARM7.pendingAbtD | ARM7.pendingAbtP | ARM7.pendingUnd | ARM7.pendingSwi \
+								 | (ARM7.pendingFiq & !(GET_CPSR & F_MASK)) | (ARM7.pendingIrq & !(GET_CPSR & I_MASK)))
 
 /* Static Vars */
 //Note: for multi-cpu implementation, this approach won't work w/o modification

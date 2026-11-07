@@ -11,6 +11,8 @@
 #include "sound/tms5220.h"
 //#include "sound/msm5205.h"
 
+//#define PLAY_OLD_TMS_HACK // seems like not needed anymore since the 09/2026 update of the TMS core?
+
 /*----------------
 /  Local variables
 /-----------------*/
@@ -219,7 +221,9 @@ static DISCRETE_SOUND_START(play_tones)
 
 	DISCRETE_ADDER4(NODE_50,1,NODE_10,NODE_20,NODE_30,NODE_40) // Mix all four sound sources
 
-	DISCRETE_OUTPUT(NODE_50, 75)                               // Take the output from the mixer
+	/* Unipolar (four triangles of BIAS 10000, +40000 of DC even in silence: disabled wave nodes output their BIAS),
+	   hence _AC to correct/center around 0. Peaks +-25000 per tone, about +-100000 (3x 16bit full scale) with all four - level unverified */
+	DISCRETE_OUTPUT_AC(NODE_50, 75)                          // Take the output from the mixer
 DISCRETE_SOUND_END
 
 MACHINE_DRIVER_START(PLAYMATICS1)
@@ -252,7 +256,8 @@ static UINT8 snd_ef3(void) {
   sndlocals.ef[3] = ((val & 0x40) >> 6);
   sndlocals.ef[4] = ((val & 0x80) >> 7);
 
-  //!! HACK to fix cerberus, maybe newer TMS5220 core could fix this?
+#ifdef PLAY_OLD_TMS_HACK
+  // HACK to fix cerberus, maybe newer TMS5220 core could fix this?
   if (sndlocals.ef[4] && sndlocals.oldData) {
     sndlocals.ef[0]++;
     if (sndlocals.ef[0] > 20000) {
@@ -262,6 +267,7 @@ static UINT8 snd_ef3(void) {
       sndlocals.oldData = 0;
     }
   }
+#endif
 
   return sndlocals.ef[1] | (sndlocals.ef[2] << 1) | (sndlocals.ef[3] << 2) | (sndlocals.ef[4] << 3);
 }
@@ -278,8 +284,10 @@ static WRITE_HANDLER(out_snd_3) {
   if (sndlocals.enSn) tms5220_data_w(0, data);
   sndlocals.oldData = data;
 
-  //!! HACK to fix cerberus, maybe newer TMS5220 core could fix this?
+#ifdef PLAY_OLD_TMS_HACK
+  // HACK to fix cerberus, maybe newer TMS5220 core could fix this?
   sndlocals.ef[0] = 0; // using unused ef[0] as counter to see if TMS is stuck talking
+#endif
 }
 
 static CDP1802_CONFIG playsound_config3 =

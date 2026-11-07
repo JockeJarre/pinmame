@@ -26,8 +26,8 @@
 /******************************************************************************
  *  Notes:
 
-    **This core comes from my AT91 cpu core contributed to PinMAME, 
-	  but with all the AT91 specific junk removed, 
+	**This core comes from my AT91 cpu core contributed to PinMAME,
+	  but with all the AT91 specific junk removed,
 	  which leaves just the ARM7TDMI core itself. I further removed the CPU specific MAME stuff
 	  so you just have the actual ARM7 core itself, since many cpu's incorporate an ARM7 core, but add on
 	  many cpu specific functionality.
@@ -36,14 +36,19 @@
 	  implementation, and therefore, this file shouldn't be compiled as part of your project directly.
 	  Additionally, you will need to include arm7exec.c in your cpu's execute routine.
 
-	  For better or for worse, the code itself is very much intact from it's arm 2/3/6 origins from 
+	  For better or for worse, the code itself is very much intact from it's arm 2/3/6 origins from
 	  Bryan & Phil's work. I contemplated merging it in, but thought the fact that the CPSR is
 	  no longer part of the PC was enough of a change to make it annoying to merge.
 	**
 
-	Coprocessor functions are heavily implementation specific, so callback handlers are used to allow the 
+	Coprocessor functions are heavily implementation specific, so callback handlers are used to allow the
 	implementation to handle the functionality. Custom DASM handlers are included as well to allow the DASM
 	output to be tailored to the co-proc implementation details.
+
+	Cycle counting: the per-instruction counts implement the ARM7TDMI datasheet's S/N/I cycle formulas (quoted at each handler) with S = N = I = 1
+	i.e. every sequential/non-sequential/internal cycle is charged as one clock. Bus reality (wait states per chip select, 16- vs 32-bit bus width, DRAM refresh)
+	is NOT modeled; absolute speed is calibrated by the machine's configured CPU clock instead.
+	The asmjit JIT charges the identical model (see arm_insn_cycles in jit_asmjit.cpp), so both execution paths stay cycle-identical.
 
 	Todo:
 	Thumb mode support not yet implemented. 26 bit compatibility mode not implemented.
@@ -52,7 +57,7 @@
 	Could not find info on what the TEQP opcode is from page 44..
 	I have no idea if user bank switching is right, as I don't fully understand it's use.
 	Search for Todo: tags for remaining items not done.
-	
+
 
 	Differences from Arm 2/3 (6 also?)
 	-Full 32 bit address support
@@ -63,7 +68,7 @@
 	-New operation modes? (unconfirmed)
 
 	Based heavily on arm core from MAME 0.76:
-    *****************************************
+	*****************************************
 	ARM 2/3/6 Emulation
 
 	Todo:
@@ -146,18 +151,20 @@ INLINE data32_t arm7_cpu_read32( int addr )
 	result = cpu_readmem32ledw_dword(addr);
 
 	/* Unaligned reads rotate the word, they never combine words */
-	if (addr&3) {
+	const int addr3 = addr&3;
+	if (addr3) {
 		#if ARM7_DEBUG_CORE
 			if(addr&1)
 				LOG(("%08x: Unaligned byte read %08x\n",R15,addr));
 		#endif
 
-		if ((addr&3)==3)
-			return rotl_32(result, 24);
-		if ((addr&3)==2)
-			return rotl_32(result, 16);
-		if ((addr&3)==1)
-			return rotl_32(result, 8);
+		// right by 8 * addr[1:0] (ARM ARM v4)
+		if(addr3==3)
+			return rotr_32(result, 24);
+		if(addr3==2)
+			return rotr_32(result, 16);
+		//if(addr3==1)
+			return rotr_32(result, 8);
 	}
 	return result;
 }
@@ -260,29 +267,81 @@ static const char* GetModeText( int cpsr )
 #define GetSavedRegister(mode, rIndex)  ARMREG(sRegisterTable[mode][rIndex])
 #define SetSavedRegister(mode, rIndex, value) (ARMREG(sRegisterTable[mode][rIndex]) = value)
 
-// Mode register access: read/write a register in the bank for the given mode.  If the
-// given mode is the current mode, these read/write the active registers.  Otherwise,
-// these read/write the saved bank for the given mode.
-#define GetModeRegister(mode, rIndex)  ((mode) == GET_MODE ? GetActiveRegister(rIndex) : GetSavedRegister(mode, rIndex))
-#define SetModeRegister(mode, rIndex, value)  ((mode) == GET_MODE ? SetActiveRegister(rIndex, value) : SetSavedRegister(mode, rIndex, value))
+// Is register 'rIndex' of mode 'mode' the SAME PHYSICAL register that the active window
+// currently holds?
+//
+// This is the crux of mode-register access.  While we are running in mode M, the LIVE
+// values of R8-R14 sit in the active window; the saved slots sRegisterTable[M][8..14]
+// hold only a stale copy, which SwitchMode() overwrites from the active window on the way
+// out of M.  So writing a saved slot that is currently swapped in is silently discarded,
+// and reading one returns a stale value.
+//
+// That is not just the mode == GET_MODE case: the banking is per register, not per mode.
+// R8-R12 are shared by EVERY mode except FIQ, so while we are in SVC/IRQ/ABT/UND the
+// user-bank slots eR8_User..eR12_User are exactly the slots swapped into the active window
+// - a user bank transfer (LDM^/STM^) touching R8-R12 from one of those modes has to go to
+// the ACTIVE window.  Comparing the two sRegisterTable entries answers this in general:
+// equal entries mean the same physical register, hence "currently active".
+//
+// (mode) == GET_MODE is kept as a short-circuit because it is the hot path - normal LDM/STM
+// passes GET_MODE, and only the rare ^ forms pass eARM7_MODE_USER.
+//
+// NB: macro arguments are evaluated more than once; all call sites pass simple variables.
+#define ModeRegisterIsActive(mode, rIndex) \
+	((mode) == GET_MODE || sRegisterTable[mode][rIndex] == sRegisterTable[GET_MODE][rIndex])
+
+// Mode register access: read/write register 'rIndex' as seen by mode 'mode', whether that
+// register currently lives in the active window or in a saved bank.
+#define GetModeRegister(mode, rIndex)  \
+	(ModeRegisterIsActive(mode, rIndex) ? GetActiveRegister(rIndex) : GetSavedRegister(mode, rIndex))
+#define SetModeRegister(mode, rIndex, value)  \
+	(ModeRegisterIsActive(mode, rIndex) ? SetActiveRegister(rIndex, value) : SetSavedRegister(mode, rIndex, value))
+
+// The seven architecturally defined processor modes, as a bit set indexed by the 4-bit
+// GET_MODE value (CPSR bit 4 is ignored here, as everywhere in this core).
+#define ARM7_VALID_MODES \
+	((1u << eARM7_MODE_USER) | (1u << eARM7_MODE_FIQ) | (1u << eARM7_MODE_IRQ) | (1u << eARM7_MODE_SVC) \
+	 | (1u << eARM7_MODE_ABT) | (1u << eARM7_MODE_UND) | (1u << eARM7_MODE_SYS))
+
+// Sanitize a value that is about to be written to the CPSR from GUEST-SUPPLIED data - an MSR,
+// or a restore of the SPSR on exception return.
+//
+// Writing one of the reserved mode encodings is UNPREDICTABLE on real hardware, which simply
+// ignores the mode field of such a write. Here it is not merely undefined but destructive:
+// GET_MODE indexes sRegisterTable[], whose rows for the reserved modes are all-zero filler, so
+// the next SwitchMode() would alias every banked register onto R0 and shred the register file.
+// So keep the current mode bits and take the rest of the value (upstream MAME cd60f3a2).
+//
+// Only the guest-controlled CPSR writes need this. The flag-update macros and the internal
+// "set/clear one bit" writes preserve the existing mode bits by construction, and the hot path
+// (every S-bit ALU op) must not pay for a check it can never need.
+INLINE data32_t sanitize_cpsr_mode(data32_t val)
+{
+	if (((ARM7_VALID_MODES >> (val & MODE_FLAG)) & 1) == 0)
+	{
+		#if ARM7_DEBUG_CORE
+			LOG(("%08x: attempt to set invalid CPSR mode %02x (CPSR %08x), ignored\n", R15, val & 0x1fu, GET_CPSR));
+		#endif
+		val = (val & ~0x1fu) | (GET_CPSR & 0x1fu);
+	}
+	return val;
+}
 
 INLINE void SwitchMode (int cpsr_mode_val)
 {
-	static int old_mode = 0;
-
 	// set the new mode
 	data32_t cspr = GET_CPSR & ~MODE_FLAG;
 	SET_CPSR(cspr | cpsr_mode_val);
 
 	// swap banked registers if changing modes
-	if (old_mode != cpsr_mode_val)
+	if (ARM7.prev_cpsr_mode != cpsr_mode_val)
 	{
 		int i;
 
 		// swap out the banked registers (R8-R14 and SPSR)
-		SetSavedRegister(old_mode, SPSR, GetActiveRegister(SPSR));
+		SetSavedRegister(ARM7.prev_cpsr_mode, SPSR, GetActiveRegister(SPSR));
 		for (i = 8 ; i <= 14 ; ++i)
-			SetSavedRegister(old_mode, i, GetActiveRegister(i));
+			SetSavedRegister(ARM7.prev_cpsr_mode, i, GetActiveRegister(i));
 
 		// swap in the banked registers
 		SetActiveRegister(SPSR, GetSavedRegister(cpsr_mode_val, SPSR));
@@ -290,7 +349,7 @@ INLINE void SwitchMode (int cpsr_mode_val)
 			SetActiveRegister(i, GetSavedRegister(cpsr_mode_val, i));
 
 		// remember the new mode
-		old_mode = cpsr_mode_val;
+		ARM7.prev_cpsr_mode = cpsr_mode_val;
 	}
 }
 
@@ -488,18 +547,38 @@ static int loadIncMode(data32_t pat, data32_t rbv, data32_t s, int mode)
 	return result;
 }
 
+/* # of set bits in the low 16 bits (an LDM/STM register list): used to derive the lowest address of a "decrementing" block transfer */
+INLINE int popcount16(data32_t pat)
+{
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__POPCNT__) || defined(__aarch64__))
+	return __builtin_popcount(pat & 0xffff);
+#else
+	pat &= 0xffff;
+	pat -= (pat >> 1) & 0x5555;
+	pat = (pat & 0x3333) + ((pat >> 2) & 0x3333);
+	pat = (pat + (pat >> 4)) & 0x0f0f;
+	return (int)((pat + (pat >> 8)) & 0x1f);
+#endif
+}
+
 static int loadDec( data32_t pat, data32_t rbv, data32_t s)
 {
 	int i, result;
 
+	// A "decrementing" LDM still READS memory in ASCENDING address order on real
+	// hardware (lowest register from the lowest address); only the address range
+	// lies below the base. The order is visible to memory-mapped IO, and matches
+	// the JIT's block-transfer emitter. So derive the start address first
 	result = 0;
 	rbv &= ~3;
-	for (i = 15; i >= 0; i--)
+	rbv -= popcount16(pat) << 2;
+
+	for (i = 0; i < 16; i++)
 	{
 		if ((pat >> i) & 1)
 		{
 			if (ARM7.pendingAbtD == 0) {
-				UINT32 data = READ32(rbv -= 4);
+				UINT32 data = READ32(rbv + result * 4);
 				if (i == 15) {
 					//if (s) /* Pull full contents from stack */
 						SET_REGISTER( 15, data & ~3 ); /* PC bits 1:0 ignored in ARM state */
@@ -519,15 +598,18 @@ static int loadDecMode(data32_t pat, data32_t rbv, data32_t s, int mode)
 {
 	int i, result;
 
+	// ascending read order, like loadDec above
 	result = 0;
 	rbv &= ~3;
-	for (i = 15; i >= 0; i--)
+	rbv -= popcount16(pat) << 2;
+
+	for (i = 0; i < 16; i++)
 	{
 		if ((pat >> i) & 1)
 		{
 			if (ARM7.pendingAbtD == 0) // "Overwriting of registers stops when the abort happens."
 			{
-			UINT32 data = READ32(rbv -= 4);
+			UINT32 data = READ32(rbv + result * 4);
 			if (i == 15) {
 				//if (s) /* Pull full contents from stack */
 					SET_MODE_REGISTER(mode, 15, data & ~3); /* PC bits 1:0 ignored in ARM state */
@@ -586,19 +668,11 @@ static int storeIncMode(data32_t pat, data32_t rbv, int mode)
 // classic CV: 3005aa0 does the DMA thing
 static int storeDec( data32_t pat, data32_t rbv)
 {
-	int i, result = 0, cnt;
+	int i, result, cnt;
 
-	// pre-count the # of registers doing DMA
-	for (i = 15; i >= 0; i--)
-	{
-		if ((pat >> i) & 1)
-		{
-			result++;
-
-			// starting address
-			rbv -= 4;
-		}
-	}
+	// pre-count the # of registers doing DMA, then derive the starting address
+	result = popcount16(pat);
+	rbv -= result << 2;
 
 	cnt = 0;
 	for (i = 0; i <= 15; i++)
@@ -620,8 +694,14 @@ static int storeDecMode(data32_t pat, data32_t rbv, int mode)
 {
 	int i, result;
 
+	// A "decrementing" STM still WRITES memory in ASCENDING address order on
+	// real hardware (lowest register at the lowest address, like storeDec
+	// above); the order is visible to memory-mapped IO, and matches the JIT's
+	// block-transfer emitter. So derive the start address first
 	result = 0;
-	for (i = 15; i >= 0; i--)
+	rbv -= popcount16(pat) << 2;
+
+	for (i = 0; i <= 15; i++)
 	{
 		if ((pat >> i) & 1)
 		{
@@ -629,12 +709,12 @@ static int storeDecMode(data32_t pat, data32_t rbv, int mode)
 			if (i == 15) /* R15 is plus 12 from address of STM */
 				LOG(("%08x: StoreDec on R15\n", R15));
 #endif
-			WRITE32(rbv -= 4, GET_MODE_REGISTER(mode, i));
+			WRITE32(rbv + result * 4, GET_MODE_REGISTER(mode, i));
 			result++;
 		}
 	}
 	return result;
-} /* storeDec */
+} /* storeDecMode */
 
 /***************************************************************************
  *                            Main CPU Funcs
@@ -654,7 +734,7 @@ static uint32_t arm7_aj_fetch(uint32_t pc) { return cpu_readop32(pc); }
 // Uniform uint32_t signatures keep the call ABI uniform; static (arm7core.c is #included
 // into multiple CPU TUs); wired via arm7_aj_set_mem_callbacks
 static uint32_t arm7_aj_r8 (uint32_t addr) { return READ8((int)addr); }
-static uint32_t arm7_aj_r16(uint32_t addr) { return READ16((int)addr); }
+static uint32_t arm7_aj_r16(uint32_t addr) { const uint32_t v = (data16_t)READ16((int)(addr & ~1u)); return (addr & 1) ? rotr_32(v, 8) : v; } // odd: as HandleHalfWordDT's LDRH
 static uint32_t arm7_aj_r32(uint32_t addr) { return READ32((int)addr); }
 // Each store also invalidates any translated block covering the written address
 // (self-modifying code). The interpreter does this in HandleMemSingle for STR; the
@@ -671,9 +751,10 @@ static void     arm7_aj_w32(uint32_t addr, uint32_t data) { WRITE32((int)addr, (
 // vectored), which the block returns to the exec loop as the resume address
 static uint32_t arm7_aj_exc_return(uint32_t newpc)
 {
-	if (GET_MODE != eARM7_MODE_USER)
+	// no SPSR in User or System mode: leave the CPSR alone (see HandleALU / HandleLDMS_ModeChange)
+	if (GET_MODE != eARM7_MODE_USER && GET_MODE != eARM7_MODE_SYS)
 	{
-		SET_CPSR(GET_REGISTER(SPSR));
+		SET_CPSR(sanitize_cpsr_mode(GET_REGISTER(SPSR)));
 		SwitchMode(GET_MODE);
 	}
 	R15 = newpc & ~3;
@@ -681,11 +762,9 @@ static uint32_t arm7_aj_exc_return(uint32_t newpc)
 	return R15;
 }
 
-// Set to 1 by a translated block when it exits at a single LDR/STR with a
-// pending+unmasked abort/IRQ/FIQ. The JIT exec loop vectors interrupts only when this
-// flag is set, matching the interpreter -- which runs ARM7_CHECKIRQ only after a single
-// data transfer (arm7exec.c case 4-7), not after branch/ALU/LDM/STM/halfword. Transient:
-// set by the block, consumed by the exec loop on the same iteration
+// Set to 1 by a translated block when it exits after a memory access or an MSR that
+// made an abort/IRQ/FIQ due; it ends a chain, so the exec loop's exception check
+// vectors before the next block. Transient: set by the block, cleared by the exec loop
 static data8_t arm7_aj_irq_flag = 0;
 // Install the thunks into a controller. Defined here (where the thunks live) and
 // called from the CPU-specific init (e.g. at91_init_jit). Its address is taken in
@@ -695,9 +774,9 @@ static data8_t arm7_aj_irq_flag = 0;
 static void arm7_aj_wire_mem(void *ctl)
 {
 	arm7_aj_set_mem_callbacks((ArmAsmjitCtl *)ctl, arm7_aj_r8, arm7_aj_r16, arm7_aj_r32, arm7_aj_w8, arm7_aj_w16, arm7_aj_w32);
-	// Abort/IRQ hooks (legacy gen_test_abort/gen_test_irq parity): after a single data
-	// transfer a translated block exits to the emulator so a pending+unmasked abort/IRQ/FIQ
-	// vectors, matching the interpreter's per-LDR/STR ARM7_CHECKIRQ
+	// Abort/IRQ hooks (legacy gen_test_abort/gen_test_irq parity): after a memory access or
+	// an MSR a translated block exits to the emulator when an abort/IRQ/FIQ is due, so it
+	// vectors at the same instruction boundary as in the interpreter
 	arm7_aj_set_irq_hooks((ArmAsmjitCtl *)ctl, (const void *)&arm7_check_irq_state,
 		(const void *)&ARM7.pendingAbtD, (const void *)&ARM7.pendingIrq, (const void *)&ARM7.pendingFiq, (const void *)&arm7_aj_irq_flag);
 	// MRS/MSR support: translated blocks call the interpreter's own PSR-transfer
@@ -734,6 +813,9 @@ static void arm7_core_init(const char *cpuname)
 	state_save_register_UINT8(cpuname, cpu, "ABTP", &ARM7.pendingAbtP, 1);
 	state_save_register_UINT8(cpuname, cpu, "UND", &ARM7.pendingUnd, 1);
 	state_save_register_UINT8(cpuname, cpu, "SWI", &ARM7.pendingSwi, 1);
+	// bank-swap anchor must travel with the register file: it says which mode's
+	// banked registers currently occupy the active window (see SwitchMode)
+	state_save_register_INT32(cpuname, cpu, "PREVMODE", &ARM7.prev_cpsr_mode, 1);
 
 	// create the JIT translator
 	ARM7.jit = jit_create(&ARM7_ICOUNT);
@@ -822,10 +904,16 @@ static void arm7_check_irq_state(void)
 		SwitchMode(eARM7_MODE_ABT);				/* Set ABT mode so PC is saved to correct R14 bank */
 		SET_REGISTER( 14, pc - 8 + 8);			/* save PC to R14 */
 		SET_REGISTER( SPSR, cpsr );				/* Save current CPSR */
-		SET_CPSR(GET_CPSR | I_MASK);            /* Mask IRQ */
+		SET_CPSR(GET_CPSR | I_MASK);			/* Mask IRQ */
 		SET_CPSR(GET_CPSR & ~T_MASK);
 		R15 = 0x10;								/* IRQ Vector address */
 		ARM7.pendingAbtD = 0;
+		/* Exception entry takes 2S + 1N cycles (pipeline refill from the vector).
+		   Charged here (single vectoring point) so the interpreter and the
+		   JIT path account identically. Only the ASYNCHRONOUS exceptions (aborts, FIQ, IRQ)
+		   are charged: SWI and undefined below are charged as instructions by the dispatch loop (3 resp. 4 cycles),
+		   which per the datasheet IS their exception-entry cost */
+		ARM7_ICOUNT -= 3;
 		return;
 	}
 
@@ -838,6 +926,7 @@ static void arm7_check_irq_state(void)
 		SET_CPSR(GET_CPSR | I_MASK | F_MASK);	/* Mask both IRQ & FIRQ*/
 		SET_CPSR(GET_CPSR & ~T_MASK);
 		R15 = 0x1c;								/* IRQ Vector address */
+		ARM7_ICOUNT -= 3;						/* exception entry: 2S + 1N (see data abort above) */
 		return;
 	}
 
@@ -850,6 +939,7 @@ static void arm7_check_irq_state(void)
 		SET_CPSR(GET_CPSR | I_MASK);			/* Mask IRQ */
 		SET_CPSR(GET_CPSR & ~T_MASK);
 		R15 = 0x18;								/* IRQ Vector address */
+		ARM7_ICOUNT -= 3;						/* exception entry: 2S + 1N (see data abort above) */
 		return;
 	}
 
@@ -858,10 +948,11 @@ static void arm7_check_irq_state(void)
 		SwitchMode(eARM7_MODE_ABT);				/* Set ABT mode so PC is saved to correct R14 bank */
 		SET_REGISTER( 14, pc - 4 + 4);			/* save PC to R14 */
 		SET_REGISTER( SPSR, cpsr );				/* Save current CPSR */
-		SET_CPSR(GET_CPSR | I_MASK);            /* Mask IRQ */
+		SET_CPSR(GET_CPSR | I_MASK);			/* Mask IRQ */
 		SET_CPSR(GET_CPSR & ~T_MASK);
 		R15 = 0x0c;								/* IRQ Vector address */
 		ARM7.pendingAbtP = 0;
+		ARM7_ICOUNT -= 3;						/* exception entry: 2S + 1N (see data abort above) */
 		return;
 	}
 
@@ -877,7 +968,7 @@ static void arm7_check_irq_state(void)
 			SET_REGISTER( 14, pc - 4 + 4 - 4);	/* save PC to R14 */
 		}
 		SET_REGISTER( SPSR, cpsr );				/* Save current CPSR */
-		SET_CPSR(GET_CPSR | I_MASK);            /* Mask IRQ */
+		SET_CPSR(GET_CPSR | I_MASK);			/* Mask IRQ */
 		SET_CPSR(GET_CPSR & ~T_MASK);
 		R15 = 0x04;								/* IRQ Vector address */
 		ARM7.pendingUnd = 0;
@@ -936,16 +1027,25 @@ static void arm7_core_set_irq_line(int irqline, int state)
  *                            OPCODE HANDLING
  ***************************************************************************/
 
+// No co-processor answers (the AT91 has none): the ARM7TDMI then takes the undefined instruction trap.
+// The caller advances R15 as usual, and the exec loop's exception check vectors (R14 = insn + 4)
+static void HandleCoProcAbsent(void)
+{
+#if ARM7_DEBUG_CORE
+	LOG(("%08x: Co-Processor instruction executed, but no callback defined!\n",R15));
+#endif
+	ARM7.pendingUnd = 1;
+	ARM7_ICOUNT -= 1;	//undefined takes 4 cycles (page 77)
+}
+
 // Co-Processor Data Operation
 static void HandleCoProcDO(data32_t insn)
 {
 	// This instruction simply instructs the co-processor to do something, no data is returned to ARM7 core
 	if(arm7_coproc_do_callback)
 		arm7_coproc_do_callback(insn,0,0);		//simply pass entire opcode to callback - since data format is actually dependent on co-proc implementation
-#if ARM7_DEBUG_CORE
 	else
-		LOG(("%08x: Co-Processor Data Operation executed, but no callback defined!\n",R15));
-#endif
+		HandleCoProcAbsent();
 }
 
 //Co-Processor Register Transfer - To/From Arm to Co-Proc
@@ -959,22 +1059,23 @@ static void HandleCoProcRT(data32_t insn)
 			if(arm7_coproc_rt_r_callback)
 			{
 				data32_t res = arm7_coproc_rt_r_callback(insn,0);	//RT Read handler must parse opcode & return appropriate result
-				SET_REGISTER((insn>>12)&0xf,res);
+				data32_t rd = (insn>>12)&0xf;
+				// MRC with R15 as the destination writes the flags, NOT the PC (upstream MAME cd60f3a2)
+				if (rd == eR15)
+					SET_CPSR((GET_CPSR & ~(N_MASK|Z_MASK|C_MASK|V_MASK)) | (res & (N_MASK|Z_MASK|C_MASK|V_MASK)));
+				else
+					SET_REGISTER(rd,res);
 			}
-#if ARM7_DEBUG_CORE
 			else
-				LOG(("%08x: Co-Processor Register Transfer executed, but no RT Read callback defined!\n",R15));
-#endif
+				HandleCoProcAbsent();
 		}
 	// Store (MCR) data from ARM7 to Co-Proc register
 	else
 		{
-		if(arm7_coproc_rt_r_callback)
+		if(arm7_coproc_rt_w_callback)
 			arm7_coproc_rt_w_callback(insn,GET_REGISTER((insn>>12)&0xf),0);
-#if ARM7_DEBUG_CORE
 		else
-			LOG(("%08x: Co-Processor Register Transfer executed, but no RT Write callback defined!\n",R15));
-#endif
+			HandleCoProcAbsent();
 		}
 }
 
@@ -1024,20 +1125,16 @@ static void HandleCoProcDT(data32_t insn)
 		{
 			if(arm7_coproc_dt_r_callback)
 				arm7_coproc_dt_r_callback(insn,prn,read32);
-#if ARM7_DEBUG_CORE
 			else
-				LOG(("%08x: Co-Processer Data Transfer executed, but no READ callback defined!\n",R15));
-#endif
+				HandleCoProcAbsent();
 		}
 	// Store (STC) data from Co-Proc to ARM7 memory
 	else
 		{
 			if(arm7_coproc_dt_w_callback)
 				arm7_coproc_dt_w_callback(insn,prn,write32);
-#if ARM7_DEBUG_CORE
 			else
-				LOG(("%08x: Co-Processer Data Transfer executed, but no WRITE callback defined!\n",R15));
-#endif
+				HandleCoProcAbsent();
 		}
 		
 	if (ARM7.pendingUnd != 0) return;
@@ -1076,6 +1173,8 @@ static void HandleBranch(  data32_t insn, data8_t h_bit )
 static void HandleMemSingle( data32_t insn )
 {
 	data32_t rn, rnv, off, rd, rnv_old = 0;
+	data32_t store_value;
+	int is_load;
 
 	/* Fetch the offset */
 	if (insn & INSN_I)
@@ -1091,6 +1190,13 @@ static void HandleMemSingle( data32_t insn )
 
 	/* Calculate Rn, accounting for PC */
 	rn = (insn & INSN_RN) >> INSN_RN_SHIFT;
+	rd = (insn & INSN_RD) >> INSN_RD_SHIFT;
+	is_load = (insn & INSN_SDT_L) != 0;
+
+	// A store reads its data BEFORE the base write-back, so e.g. "STR Rn,[Rn,#off]!"
+	// stores the ORIGINAL Rn (upstream MAME 1065e0e5). The manual says STR of R15
+	// stores the instruction address + 12
+	store_value = is_load ? 0 : ((rd == eR15) ? (R15 + 8 + 4) : GET_REGISTER(rd));
 
 	if (insn & INSN_SDT_P)
 	{
@@ -1138,8 +1244,7 @@ static void HandleMemSingle( data32_t insn )
 	// and privileged memory accesses.
 
 	/* Do the transfer */
-	rd = (insn & INSN_RD) >> INSN_RD_SHIFT;
-	if (insn & INSN_SDT_L)
+	if (is_load)
 	{
 		/* Load */
 		if (insn & INSN_SDT_B)
@@ -1179,7 +1284,7 @@ static void HandleMemSingle( data32_t insn )
 					LOG(("Wrote R15 in byte mode\n"));
 			#endif
 
-			WRITE8(rnv, (data8_t) GET_REGISTER(rd) & 0xffu);
+			WRITE8(rnv, (data8_t)(store_value & 0xffu));
 		}
 		else
 		{
@@ -1188,8 +1293,7 @@ static void HandleMemSingle( data32_t insn )
 					LOG(("Wrote R15 in 32bit mode\n"));
 			#endif
 
-			//WRITE32(rnv, rd == eR15 ? R15 + 8 : GET_REGISTER(rd));
-			WRITE32(rnv, rd == eR15 ? R15 + 8 + 4 : GET_REGISTER(rd)); //manual says STR rd = PC, +12
+			WRITE32(rnv, store_value); //manual says STR rd = PC, +12 (folded into store_value above)
 #if JIT_ENABLED
 			// This is to handle code in self-modifying color patches.
 			jit_untranslate(ARM7.jit, rnv);
@@ -1226,9 +1330,11 @@ static void HandleMemSingle( data32_t insn )
 		// is implied by post-index mode whether or not the W flag is set.
 		if (insn & INSN_SDT_U)
 		{
-			/* Writeback is applied in pipeline, before value is read from mem,
-				so writeback is effectively ignored */
-			if (rd==rn) {
+			/* On a LOAD the write-back is applied in the pipeline, before the value is
+			   read from memory, so the loaded value wins and the write-back is
+			   effectively ignored. On a STORE there is no such conflict, so the base
+			   is written back normally (upstream MAME cd60f3a2) */
+			if (rd==rn && is_load) {
 				SET_REGISTER(rn,GET_REGISTER(rd));
 				//todo: check for offs... ?
 			}
@@ -1244,9 +1350,8 @@ static void HandleMemSingle( data32_t insn )
 		}
 		else
 		{
-			/* Writeback is applied in pipeline, before value is read from mem,
-				so writeback is effectively ignored */
-			if (rd==rn) {
+			/* see the LOAD/STORE note above */
+			if (rd==rn && is_load) {
 				SET_REGISTER(rn,GET_REGISTER(rd));
 			}
 			else {
@@ -1259,7 +1364,7 @@ static void HandleMemSingle( data32_t insn )
 			}
 		}
 	}
-	// Can't do this here, R15 gets incremented after. 
+	// Can't do this here, R15 gets incremented after.
 	//ARM7_CHECKIRQ;
 
 } /* HandleMemSingle */
@@ -1267,6 +1372,8 @@ static void HandleMemSingle( data32_t insn )
 static void HandleHalfWordDT(data32_t insn)
 {
 	data32_t rn, rnv, off, rd, rnv_old = 0;
+	data32_t store_value;
+	int is_load;
 
 	//Immediate or Register Offset?
 	if(insn & 0x400000) {				//Bit 22 - 1 = immediate, 0 = register
@@ -1280,6 +1387,12 @@ static void HandleHalfWordDT(data32_t insn)
 
 	/* Calculate Rn, accounting for PC */
 	rn = (insn & INSN_RN) >> INSN_RN_SHIFT;
+	rd = (insn & INSN_RD) >> INSN_RD_SHIFT;
+	is_load = (insn & INSN_SDT_L) != 0;
+
+	// As in HandleMemSingle: a store reads its data BEFORE the base write-back
+	// (upstream MAME 1065e0e5). STRH of R15 stores the instruction address + 12
+	store_value = is_load ? 0 : ((rd == eR15) ? (R15 + 8 + 4) : GET_REGISTER(rd));
 
 	if (insn & INSN_SDT_P)
 	{
@@ -1319,7 +1432,6 @@ static void HandleHalfWordDT(data32_t insn)
 	}
 
 	/* Do the transfer */
-	rd = (insn & INSN_RD) >> INSN_RD_SHIFT;
 
 	// TODO: Determine if post-index + write-back (P=0 + W=1) mode triggers the
 	// same special user-mode memory access as in LDR/STR.  In LDR/STR, P=0 W=1
@@ -1342,10 +1454,15 @@ static void HandleHalfWordDT(data32_t insn)
 
 			//Signed Half Word?
 			if(insn & 0x20) {
-				data16_t signbyte,databyte;
-				databyte = READ16(rnv) & 0xFFFF;
-				signbyte = (databyte & 0x8000) ? 0xffff : 0;
-				newval = (data32_t)(signbyte<<16)|databyte;
+				// LDRSH from an unaligned address is UNPREDICTABLE in the architecture.
+				// A real ARM7TDMI reads the halfword at (rnv & ~1) and, for an ODD
+				// address, shifts the sign-extended result down by 8 - so what lands in
+				// Rd is the sign-extended HIGH byte of that halfword, i.e. exactly the
+				// signed byte AT rnv (upstream MAME: READ16(rnv & ~1) then >>= 8)
+				INT32 data = (INT32)(INT16)(data16_t)READ16(rnv & ~1);
+				if (rnv & 1)
+					data >>= 8;
+				newval = (data32_t)data;
 			}
 			//Signed Byte
 			else {
@@ -1386,7 +1503,11 @@ static void HandleHalfWordDT(data32_t insn)
 		//Unsigned Half Word
 		else
 		{
-			data32_t newval = READ16(rnv);
+			// LDRH from an odd address is UNPREDICTABLE in the architecture; a real ARM7TDMI reads
+			// the halfword at (addr & ~1) and rotates the word right by 8 (as MAME's arm7 core does)
+			data32_t newval = (data16_t)READ16(rnv & ~1);
+			if (rnv & 1)
+				newval = rotr_32(newval, 8);
 			
 			if (ARM7.pendingAbtD == 0)
 			{
@@ -1414,32 +1535,34 @@ static void HandleHalfWordDT(data32_t insn)
 			}
 		}
 	}
-	/* Store or ARMv5+ dword insns */
+	/* Store, or (on ARMv5TE) the dword insns - which this ARM7TDMI core does not have */
 	else
 	{
-		if ((insn & 0x60) == 0x40)  // LDRD
+		if ((insn & 0x60) == 0x40 || (insn & 0x60) == 0x60)  // LDRD / STRD
 		{
-			SET_REGISTER(rd, READ32(rnv));
-			SET_REGISTER(rd+1, READ32(rnv+4));
+			// LDRD/STRD need the DSP (E) extensions; on an ARM7TDMI these encodings are
+			// UNDEFINED and must take the undefined instruction trap rather than being
+			// executed as a double-word transfer (upstream MAME cd60f3a2)
+			#if ARM7_DEBUG_CORE
+				LOG(("%08x: LDRD/STRD on a core without the DSP extensions\n", R15));
+			#endif
+			if ((insn & INSN_SDT_P) && (insn & INSN_SDT_W))
+			{
+				SET_REGISTER(rn, rnv_old);
+			}
 			R15 += 4;
-		}
-		else if ((insn & 0x60) == 0x60) // STRD
-		{
-			WRITE32(rnv, GET_REGISTER(rd));
-			WRITE32(rnv+4, GET_REGISTER(rd+1));
-			R15 += 4;
+			ARM7.pendingUnd = 1;
+			ARM7_ICOUNT -= 1;	//undefined takes 4 cycles (page 77)
+			ARM7_CHECKIRQ;
+			return;
 		}
 		/* Store */
 		else
 		{
-			//WRITE16(rnv, rd == eR15 ? R15 + 8 : GET_REGISTER(rd));
-			WRITE16(rnv, rd == eR15 ? R15 + 8 + 4 : GET_REGISTER(rd)); //manual says STR RD=PC, +12 of address
-			
+			WRITE16(rnv, store_value); //manual says STR RD=PC, +12 of address (folded into store_value above)
+
 			// if R15 is not increased then e.g. "STRH R10, [R15,#$10]" will be executed over and over again
-#if 0
-			if(rn != eR15)
-#endif
-				R15 += 4;
+			R15 += 4;
 			//STRH takes 2 cycles, so we add + 1
 			ARM7_ICOUNT += 1;
 		}
@@ -1463,9 +1586,10 @@ static void HandleHalfWordDT(data32_t insn)
 		// This always happens in post-index mode regardless of the W flag.
 		if (insn & INSN_SDT_U)
 		{
-			/* Writeback is applied in pipeline, before value is read from mem,
-				so writeback is effectively ignored */
-			if (rd==rn) {
+			/* On a LOAD the write-back is applied in the pipeline, before the value is
+			   read from memory, so the loaded value wins. On a STORE the base is
+			   written back normally (upstream MAME cd60f3a2) */
+			if (rd==rn && is_load) {
 				SET_REGISTER(rn,GET_REGISTER(rd));
 				//todo: check for offs... ?
 			}
@@ -1481,9 +1605,8 @@ static void HandleHalfWordDT(data32_t insn)
 		}
 		else
 		{
-			/* Writeback is applied in pipeline, before value is read from mem,
-				so writeback is effectively ignored */
-			if (rd==rn) {
+			/* see the LOAD/STORE note above */
+			if (rd==rn && is_load) {
 				SET_REGISTER(rn,GET_REGISTER(rd));
 			}
 			else {
@@ -1544,8 +1667,12 @@ static void HandleSwap(data32_t insn)
 static void HandleMSR(int spsr, data32_t val, data32_t fields)
 {
 	int oldmode = GET_CPSR & MODE_FLAG;
-	int reg = (spsr && oldmode != eARM7_MODE_USER) ? SPSR : eCPSR;        //Either CPSR or SPSR
+	int reg = spsr ? SPSR : eCPSR;        //Either CPSR or SPSR
 	data32_t newval;
+
+	// User and System mode have no SPSR: an MSR to it does nothing (it wrote the CPSR before)
+	if (spsr && (oldmode == eARM7_MODE_USER || oldmode == eARM7_MODE_SYS))
+		return;
 
 	// get current value of CPSR/SPSR - we'll use this as the basis for
 	// any bits not affected by the MSR
@@ -1572,8 +1699,8 @@ static void HandleMSR(int spsr, data32_t val, data32_t fields)
 		// status flags can be modified regardless of mode
 		if (fields & 0x00080000)
 		{
-			// TODO for non ARMv5E mask should be 0xf0000000 (ie mask Q bit)
-			newval = (newval & 0x00ffffff) | (val & 0xf8000000);
+			// N, Z, C, V only: the ARM7TDMI (ARMv4T) has no Q bit (bit 27, ARMv5TE)
+			newval = (newval & 0x00ffffff) | (val & 0xf0000000);
 		}
 	}
 	else    // SPSR has stricter requirements
@@ -1594,8 +1721,8 @@ static void HandleMSR(int spsr, data32_t val, data32_t fields)
 			}
 			if (fields & 0x00080000)
 			{
-				// TODO for non ARMv5E mask should be 0xf0000000 (ie mask Q bit)
-				newval = (newval & 0x00ffffff) | (val & 0xf8000000);
+				// N, Z, C, V only: no Q bit on ARMv4T
+				newval = (newval & 0x00ffffff) | (val & 0xf0000000);
 			}
 		}
 	}
@@ -1604,9 +1731,14 @@ static void HandleMSR(int spsr, data32_t val, data32_t fields)
 	// force valid mode
 	newval |= 0x10;
 #endif
-	// Update the Register
+	// Update the Register. An MSR to the CPSR is guest-supplied data, so a reserved mode
+	// encoding has to be rejected before it reaches SwitchMode() below (the SPSR can hold
+	// anything - it is sanitized on the exception return that restores it)
 	if (reg == eCPSR)
+	{
+		newval = sanitize_cpsr_mode(newval);
 		SET_CPSR(newval);
+	}
 	else
 		SET_REGISTER(reg, newval);
 	
@@ -1806,10 +1938,12 @@ static void HandleALU( data32_t insn )
 				// the current mode is moved to the CPSR. This allows state changes which automatically restore both PC and
 				// CPSR. --> This form of instruction should not be used in User mode. <--
 
-				if (GET_MODE != eARM7_MODE_USER)
+				// User and System mode have no SPSR: the S-bit write to R15 is
+				// UNPREDICTABLE there, so leave the CPSR alone (upstream MAME cd60f3a2)
+				if (GET_MODE != eARM7_MODE_USER && GET_MODE != eARM7_MODE_SYS)
 				{
 					// Update CPSR from SPSR
-					SET_CPSR(GET_REGISTER(SPSR));
+					SET_CPSR(sanitize_cpsr_mode(GET_REGISTER(SPSR)));
 					SwitchMode(GET_MODE);
 				}
 
@@ -1835,7 +1969,10 @@ static void HandleALU( data32_t insn )
 			#if ARM7_DEBUG_CORE
 				LOG(("%08x: TST class on R15 s bit set\n",R15));
 			#endif
-			R15 = rd;
+			// Rd is SBZ for the compare instructions in the 32-bit architectures
+			// (UNPREDICTABLE otherwise): the flags were set normally above and R15
+			// is left alone - it must NOT be loaded with the discarded ALU result
+			// (upstream MAME cd60f3a2)
 
 			/* IRQ masks may have changed in this instruction */
 			ARM7_CHECKIRQ;
@@ -1897,7 +2034,9 @@ static void HandleMul( data32_t insn)
 		SET_CPSR ( (GET_CPSR &~ (N_MASK | Z_MASK)) | HandleALUNZFlags(r));
 	}
 
-	if (rs & SIGN_BIT) rs = -rs;
+	// m = 1 when bits 31-8 of the multiplier are all 0 or all 1, 2 for bits 31-16, 3 for bits
+	// 31-24, else 4: complementing a negative value turns "all 1" into "all 0"
+	if (rs & SIGN_BIT) rs = ~rs;
 	if (rs < 0x00000100) ARM7_ICOUNT -= 1 + 1;
 	else if (rs < 0x00010000) ARM7_ICOUNT -= 1 + 2;
 	else if (rs < 0x01000000) ARM7_ICOUNT -= 1 + 3;
@@ -1949,10 +2088,10 @@ static void HandleSMulLong( data32_t insn)
 		SET_CPSR ( (GET_CPSR &~ (N_MASK | Z_MASK)) | HandleLongALUNZFlags(res));
 	}
 
-	if (rs < 0) rs = -rs;
-	if (rs < 0x00000100) ARM7_ICOUNT -= 1 + 1 + 1;
-	else if (rs < 0x00010000) ARM7_ICOUNT -= 1 + 2 + 1;
-	else if (rs < 0x01000000) ARM7_ICOUNT -= 1 + 3 + 1;
+	if (rs < 0) rs = ~rs;	// m as in HandleMul
+	if ((UINT32)rs < 0x00000100u) ARM7_ICOUNT -= 1 + 1 + 1;
+	else if ((UINT32)rs < 0x00010000u) ARM7_ICOUNT -= 1 + 2 + 1;
+	else if ((UINT32)rs < 0x01000000u) ARM7_ICOUNT -= 1 + 3 + 1;
 	else ARM7_ICOUNT -= 1 + 4 + 1;
 
 	ARM7_ICOUNT += 3;
@@ -2016,11 +2155,44 @@ static void HandleUMulLong( data32_t insn)
 // rules, and it's non-sensical in that no SPSR exists in user mode.
 static void HandleLDMS_ModeChange(void)
 {
-	if (GET_MODE != eARM7_MODE_USER)
+	// User and System mode have no SPSR: an LDM with PC and the S bit is
+	// UNPREDICTABLE there, so leave the CPSR alone (upstream MAME cd60f3a2)
+	if (GET_MODE != eARM7_MODE_USER && GET_MODE != eARM7_MODE_SYS)
 	{
-		SET_CPSR(GET_REGISTER(SPSR));
+		SET_CPSR(sanitize_cpsr_mode(GET_REGISTER(SPSR)));
 		SwitchMode(GET_MODE);
 	}
+}
+
+// "A LDM will always overwrite the updated base if the base is in the list" - but that only
+// holds when the list really loads the SAME PHYSICAL register as the base.
+//
+// In a user bank transfer (LDM ^ with the S bit and R15 NOT in the list) executed from a
+// privileged mode, the list loads the USER copies of the registers. If the base is one of the
+// registers banked by the current mode (R13/R14, or R8-R14 in FIQ) it is then a different
+// physical register: the load does NOT clobber it, and the write-back has to happen as usual.
+// The classic exception-return pair "LDMFD R13!,{R0-R14}^ / LDMFD R13!,{R15}^" depends on this -
+// the second load must see the stack pointer updated by the first (upstream MAME da1b03d6).
+//
+// "Does the list load the base?" is exactly "does the USER copy of rb alias the register the
+// base names in the current mode?", which is what ModeRegisterIsActive() answers - and it is
+// the very same test the transfer itself uses to pick its destination, so the two cannot
+// disagree.  That also covers User and System mode for free: there the user bank IS the active
+// bank, so every register aliases and the base is loaded as in a plain LDM (LDM ^ from user mode
+// is UNPREDICTABLE anyway).
+//
+// Returns nonzero if the transfer loads the base register (so the write-back must be suppressed).
+static int ldm_loads_base(data32_t insn, data32_t rb)
+{
+	if (((insn >> rb) & 1) == 0)
+		return 0;						// base isn't in the transfer list at all
+
+	// (rb == 15 cannot reach the test below: it would need bit 15 both set - to get past the
+	// check above - and clear, for this to be a user bank transfer)
+	if ((insn & INSN_BDT_S) && ((insn & 0x8000) == 0))
+		return ModeRegisterIsActive(eARM7_MODE_USER, rb);	// user bank transfer
+
+	return 1;
 }
 
 static void HandleMemBlock( data32_t insn)
@@ -2028,6 +2200,40 @@ static void HandleMemBlock( data32_t insn)
 	data32_t rb = (insn & INSN_RN) >> INSN_RN_SHIFT;
 	data32_t rbp = GET_REGISTER(rb);
 	int result;
+
+	// An empty register list is UNPREDICTABLE, and NOT a no-op: real cores write the
+	// base back by 0x40 as if all 16 registers had been transferred, and ARMv4 cores
+	// (ARM7TDMI) also transfer R15 through the first slot (upstream MAME cd60f3a2)
+	if ((insn & 0xffff) == 0)
+	{
+		data32_t addr = (insn & INSN_BDT_U)
+			? (rbp + ((insn & INSN_BDT_P) ? 4 : 0))
+			: (rbp - ((insn & INSN_BDT_P) ? 0x40 : 0x3c));
+		#if ARM7_DEBUG_CORE
+			LOG(("%08x: %s with an empty register list\n", R15, (insn & INSN_BDT_L) ? "LDM" : "STM"));
+		#endif
+		if (insn & INSN_BDT_L)
+		{
+			data32_t data = READ32(addr & ~3);
+			if (ARM7.pendingAbtD == 0)
+				R15 = (data & ~3) - 4;	// PC bits 1:0 ignored in ARM state; -4 because the dispatcher adds 4
+			// as for a single-register LDM: nS + 1N + 1I with n = 1
+			ARM7_ICOUNT -= 3;
+		}
+		else
+		{
+			// (no jit_untranslate here, matching the normal storeInc/storeDec STM paths)
+			WRITE32(addr & ~3, R15 + 12);
+			// as for a single-register STM: (n-1)S + 2N with n = 1
+			ARM7_ICOUNT -= 2;
+		}
+		if ((insn & INSN_BDT_W) && (ARM7.pendingAbtD == 0))
+			SET_REGISTER(rb, (insn & INSN_BDT_U) ? (rbp + 0x40) : (rbp - 0x40));
+
+		// cancel the -3 the dispatch loop applies to every instruction
+		ARM7_ICOUNT += 3;
+		return;
+	}
 
 #if ARM7_DEBUG_CORE
 	if(rbp & 3)
@@ -2073,9 +2279,9 @@ static void HandleMemBlock( data32_t insn)
 					if(rb==15)
 						LOG(("%08x:  Illegal LDRM writeback to r15\n",R15));
 				#endif
-				// "A LDM will always overwrite the updated base if the base is in the list." (also for a user bank transfer?)
+				// "A LDM will always overwrite the updated base if the base is in the list." (see ldm_loads_base)
 				// GBA "V-Rally 3" expects R0 not to be overwritten with the updated base value [BP 8077B0C]
-				if (((insn >> rb) & 1) == 0)
+				if (!ldm_loads_base(insn, rb))
 				{
 					SET_REGISTER(rb,GET_REGISTER(rb)+result*4);
 				}
@@ -2122,8 +2328,8 @@ static void HandleMemBlock( data32_t insn)
 				if (rb == 0xf)
 					LOG(("%08x:  Illegal LDRM writeback to r15\n",R15));
 			#endif
-				// "A LDM will always overwrite the updated base if the base is in the list." (also for a user bank transfer?)
-				if (((insn >> rb) & 1) == 0)
+				// "A LDM will always overwrite the updated base if the base is in the list." (see ldm_loads_base)
+				if (!ldm_loads_base(insn, rb))
 				{
 					SET_REGISTER(rb,GET_REGISTER(rb)-result*4);
 				}
@@ -2154,6 +2360,16 @@ static void HandleMemBlock( data32_t insn)
 			/* special case handling if writing to PC */
 			R15 += 12;
 		}
+		// With write-back and the base in the list, the ARM7TDMI stores the original base only when
+		// it is the first register stored: the base is written back after the first transfer, so a
+		// later one stores the updated value
+		int base_written = 0;
+		if ((insn & INSN_BDT_W) && ((insn >> rb) & 1) && (insn & ((1u << rb) - 1)) && rb != eR15)
+		{
+			const data32_t n = popcount16(insn & 0xffff);
+			SET_REGISTER(rb, (insn & INSN_BDT_U) ? (rbp + n * 4) : (rbp - n * 4));
+			base_written = 1;
+		}
 		if (insn & INSN_BDT_U)
 		{
 			/* Incrementing */
@@ -2180,7 +2396,7 @@ static void HandleMemBlock( data32_t insn)
 			else
 				result = storeIncMode(insn & 0xffff, rbp, GET_MODE);
 
-			if(( insn & INSN_BDT_W ) && (ARM7.pendingAbtD == 0))
+			if(( insn & INSN_BDT_W ) && (ARM7.pendingAbtD == 0) && !base_written)
 			{
 				SET_REGISTER(rb,GET_REGISTER(rb)+result*4);
 			}
@@ -2209,7 +2425,7 @@ static void HandleMemBlock( data32_t insn)
 			else
 				result = storeDecMode(insn & 0xffff, rbp, GET_MODE);
 
-			if(( insn & INSN_BDT_W ) && (ARM7.pendingAbtD == 0))
+			if(( insn & INSN_BDT_W ) && (ARM7.pendingAbtD == 0) && !base_written)
 			{
 				SET_REGISTER(rb,GET_REGISTER(rb)-result*4);
 			}

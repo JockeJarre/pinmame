@@ -91,6 +91,12 @@
     <Filter Include="Source Files\PinMAME\sims">
       <UniqueIdentifier>{06912acb-374d-4cb0-bcf0-39d30c743545}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\PinMAME\sims\atari">
+      <UniqueIdentifier>{7a4f1c80-6d2b-4e09-9f3a-21c6b5e84d17}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\PinMAME\sims\atari\prelim_atari">
+      <UniqueIdentifier>{b35e9d42-8c17-4a6f-93d5-0e7418aa52c9}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files\PinMAME\sims\s11">
       <UniqueIdentifier>{fd386b5d-5f8c-4b77-a099-cdce1d5ad550}</UniqueIdentifier>
     </Filter>
@@ -120,6 +126,9 @@
     </Filter>
     <Filter Include="Source Files\PinMAME\sims\se\prelim_se">
       <UniqueIdentifier>{d18ab3e2-385b-4cd6-ba14-39d8dae264cb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\PinMAME\sims\sleic">
+      <UniqueIdentifier>{9bb9e8b5-f978-4f71-b513-3096395d89aa}</UniqueIdentifier>
     </Filter>
     <Filter Include="Source Files\VC">
       <UniqueIdentifier>{e8357ea1-f871-4a99-a78a-db479367dad4}</UniqueIdentifier>
@@ -193,6 +202,9 @@
       <Filter>Source Files\MAME</Filter>
     </ClCompile>
     <ClCompile Include="..\src\input.c">
+      <Filter>Source Files\MAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\keyscript.c">
       <Filter>Source Files\MAME</Filter>
     </ClCompile>
     <ClCompile Include="..\src\mame.c">
@@ -472,6 +484,9 @@
       <Filter>Source Files\MAME\Machine</Filter>
     </ClCompile>
     <ClCompile Include="..\src\machine\i8155.c">
+      <Filter>Source Files\MAME\Machine</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\machine\i8256.c">
       <Filter>Source Files\MAME\Machine</Filter>
     </ClCompile>
     <ClCompile Include="..\src\machine\mathbox.c">
@@ -879,7 +894,94 @@
     <ClCompile Include="..\src\wpc\regama.c">
       <Filter>Source Files\PinMAME</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\wpc\rfranco.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\rfrancogames.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\wpc\rotation.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\recel.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cpu\mips32\mips32.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cpu\mips32\mips32dasm.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cpu\pic32mx\pic32mx.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cpu\pic32mx\pic32mxcpu.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cpu\p8x32a\p8x32a.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\eeprom.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\prop.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\rtc.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\bootldr.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\sd.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\vfat.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\zipsrc.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\display.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\audio.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\board.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\atari\prelim\fourx4.c">
+      <Filter>Source Files\PinMAME\sims\atari\prelim_atari</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\pinheck\dominos.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\pinheck\rzspook.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\pinheck\jetsons.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\hexload.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheck\dmd.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\pinheck\amh.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\pinheckgames.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\recelgames.c">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\wpc\recelsnd.c">
       <Filter>Source Files\PinMAME</Filter>
     </ClCompile>
     <ClCompile Include="..\src\wpc\rowamet.c">
@@ -1176,6 +1278,9 @@
     <ClCompile Include="..\src\wpc\sims\se\prelim\monopoly.c">
       <Filter>Source Files\PinMAME\sims\se\prelim_se</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\wpc\sims\sleic\iomoon.c">
+      <Filter>Source Files\PinMAME\sims\sleic</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\vc\dirent.c">
       <Filter>Source Files\VC</Filter>
     </ClCompile>
@@ -1353,6 +1458,9 @@
       <Filter>Source Files\MAME</Filter>
     </ClInclude>
     <ClInclude Include="..\src\input.h">
+      <Filter>Source Files\MAME</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\keyscript.h">
       <Filter>Source Files\MAME</Filter>
     </ClInclude>
     <ClInclude Include="..\src\legacy.h">
@@ -1596,6 +1704,9 @@
       <Filter>Source Files\MAME\Machine</Filter>
     </ClInclude>
     <ClInclude Include="..\src\machine\i8155.h">
+      <Filter>Source Files\MAME\Machine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\machine\i8256.h">
       <Filter>Source Files\MAME\Machine</Filter>
     </ClInclude>
     <ClInclude Include="..\src\machine\mathbox.h">
@@ -1857,6 +1968,12 @@
       <Filter>Source Files\PinMAME</Filter>
     </ClInclude>
     <ClInclude Include="..\src\wpc\play.h">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\wpc\rfranco.h">
+      <Filter>Source Files\PinMAME</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\wpc\recel.h">
       <Filter>Source Files\PinMAME</Filter>
     </ClInclude>
     <ClInclude Include="..\src\wpc\s11.h">

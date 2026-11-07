@@ -577,6 +577,14 @@
 					>
 				</File>
 				<File
+					RelativePath=".\..\src\keyscript.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\keyscript.h"
+					>
+				</File>
+				<File
 					RelativePath=".\..\src\legacy.h"
 					>
 				</File>
@@ -1973,6 +1981,14 @@
 					</File>
 					<File
 						RelativePath=".\..\src\machine\i8155.h"
+						>
+					</File>
+					<File
+						RelativePath=".\..\src\machine\i8256.c"
+						>
+					</File>
+					<File
+						RelativePath=".\..\src\machine\i8256.h"
 						>
 					</File>
 					<File
@@ -3877,7 +3893,35 @@
 					>
 				</File>
 				<File
+					RelativePath=".\..\src\wpc\rfranco.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\rfranco.h"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\rfrancogames.c"
+					>
+				</File>
+				<File
 					RelativePath=".\..\src\wpc\rotation.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\recel.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\recelgames.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\recelsnd.c"
+					>
+				</File>
+				<File
+					RelativePath=".\..\src\wpc\recel.h"
 					>
 				</File>
 				<File
@@ -4123,6 +4167,18 @@
 				<Filter
 					Name="sims"
 					>
+					<Filter
+						Name="atari"
+						>
+						<Filter
+							Name="prelim_atari"
+							>
+							<File
+								RelativePath=".\..\src\wpc\sims\atari\prelim\fourx4.c"
+								>
+							</File>
+						</Filter>
+					</Filter>
 					<Filter
 						Name="s11"
 						>
@@ -4382,6 +4438,14 @@
 								>
 							</File>
 						</Filter>
+					</Filter>
+					<Filter
+						Name="sleic"
+						>
+						<File
+							RelativePath=".\..\src\wpc\sims\sleic\iomoon.c"
+							>
+						</File>
 					</Filter>
 				</Filter>
 			</Filter>

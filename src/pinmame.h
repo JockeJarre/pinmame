@@ -1,7 +1,17 @@
 #pragma once
 
-#define WPCDCSSPEEDUP   1 // DCS Speedup added to MAME ADSP emulation
+#define WPCDCSSPEEDUP   1 // DCS decoder speedup added to MAME ADSP emulation (WPC-era ROMs only)
+#define DCSIDLESKIP     1 // Suspend the DCS ADSP while it spins waiting for the DAC, or
+                          // (Pinball 2000) for the host. Separate from WPCDCSSPEEDUP: that
+                          // substitutes a transcription of one WPC routine and is tied to
+                          // its memory map, this only notices the DSP is idle. Pinball 2000
+                          // needs this one and must not have the other one
 #define DBG_BPR         1 // BPR command added to debugger
+
+// Add a 'pin2ksnd' (RFM) & 'pin2ksw1' (SWEP1) diagnostic driver: the Pinball 2000 DCS2 sound board on
+// its own, with no game attached, so the board can be booted and exercised before a real Pin2K driver exists.
+// See docs/pin2k_sound.md. Pure development/debugging aid
+//#define PIN2K_SOUND_TEST 1
 
 #if !(defined(VPINMAME) || defined(LIBPINMAME) || defined(LISY_SUPPORT))
  #define ENABLE_MECHANICAL_SAMPLES // maybe remove this at some point completely? not wired up for all machines anyway!
@@ -25,6 +35,7 @@
 #define HAS_M6802    1
 #define HAS_ADSP2101 1 // must be defined for 2105 to work
 #define HAS_ADSP2105 1
+#define HAS_ADSP2104 1 // Pinball 2000 DCS2 sound board
 #define HAS_Z80      1
 #define HAS_M6502    1
 #define HAS_M65C02   1
@@ -46,6 +57,7 @@
 #define HAS_I8752    1
 #define HAS_TMS7000  1
 #define HAS_AT91     1
+#define HAS_PIC32MX  1
 #define HAS_ARM7     1
 #define HAS_CDP1802  1
 #define HAS_TMS9980  1
@@ -63,7 +75,9 @@
 #else
 #define HAS_YM2151_YMFM 1
 #endif // mingw
-//#define HAS_YM2151_NUKED 1
+//#define HAS_YM2151_NUKED 1 // has speed issues (at least) with DE and WPC, too 'fast'
+// nukeykt's YM2151-LLE. NOTE: that core is GPLv2
+//#define HAS_YM2151_LLE 1   // WPC sounds mostly great, DE keeps resetting
 #define HAS_HC55516    1
 #define HAS_MC3417     1
 #define HAS_SAMPLES    1
@@ -103,7 +117,11 @@
 #define HAS_YMF262_YMFM 1
 #endif // mingw
 #define HAS_MEA8000    1
+// two SAA1099 cores, pick exactly one: the MAME derived one (MAME timing, libVGM's
+// bipolar mixer), or Valley Bell's, which was written against NewRisingSun's recordings
+// from real hardware. Affects ebalchmb, cobrapb and comeback
 #define HAS_SAA1099    1
+//#define HAS_SAA1099_VB 1
 #define HAS_QSOUND     1
 #endif /* _MSC_VER */
 

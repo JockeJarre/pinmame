@@ -7,6 +7,7 @@
 ******************************************************************************/
 
 #include "driver.h"
+#include "keyscript.h"
 
 #include <time.h>
 #include <assert.h>
@@ -269,6 +270,9 @@ INLINE const struct PROCInfo* internal_code_find_proc(InputCode code)
 static int internal_code_pressed(InputCode code)
 {
 	assert( code < code_mac );
+
+	if (keyscript_pressed(code))
+		return 1;
 
 	if (code < __code_max)
 	{
@@ -940,7 +944,7 @@ struct ui_info {
 	int memory;
 };
 
-static struct ui_info ui_map[__ipt_max];
+static struct ui_info ui_map[IPT_UI_DUMPFRAME + 1]; // IPT_UI_DUMPFRAME is declared after __ipt_max
 
 int input_ui_pressed(int code)
 {

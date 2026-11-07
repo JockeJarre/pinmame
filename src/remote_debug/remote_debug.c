@@ -1,0 +1,3183 @@
+// license:BSD-3-Clause
+
+/***************************************************************************
+ * PinMAME Remote Debugger - core                                          *
+ * See remote_debug.h for the interface and the threading model.           *
+ ***************************************************************************/
+#ifdef REMOTE_DEBUG
+
+#include "remote_debug.h"
+#include "http_server.h"
+#include "mame.h"
+#include "cpuexec.h"
+#include "cpuintrf.h"
+#include "cpu/m6809/m6809.h"
+#include "cpu/m6800/m6800.h"
+#include "wpc/core.h"
+#include "wpc/wpc.h"
+#include "memory.h"
+#include "inptport.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <signal.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+
+/* Control flags shared between the emulator and the HTTP server thread.
+ * sig_atomic_t reads/writes are atomic; no lock needed for these. */
+static volatile sig_atomic_t is_paused = 0;
+static volatile sig_atomic_t step_requested = 0;
+/* set when the one instruction of a step has been let through */
+static volatile sig_atomic_t step_done = 0;
+/* a machine reset has been requested and not been carried out yet */
+static volatile sig_atomic_t reset_pending = 0;
+/* The CPU execution halts on: it is stopped in front of its next instruction
+ * and it is the one that steps. The main CPU, unless a breakpoint or
+ * watchpoint was hit by another one. */
+static int halt_cpu = 0;
+static volatile sig_atomic_t should_quit = 0;
+
+static pthread_mutex_t mame_mutex;
+volatile int remote_debug_ready = 0;
+
+/* Provided by api_handler.c (HTTP request dispatch). */
+extern void api_handler(const http_request_t *req, http_response_t *resp);
+/* Provided by src/wpc/wpc.c; -1 when no WPC banking is active. */
+extern int wpc_get_bank(void);
+/* Provided by src/wpc/wpc.c; base of the WPC RAM (NULL on non-WPC games). */
+extern UINT8 *wpc_ram;
+
+/* ------------------------------------------------------------------ */
+/* Breakpoints / watchpoints                                          */
+/* ------------------------------------------------------------------ */
+
+/* Condition operators for conditional breakpoints. */
+enum {
+	COND_NONE = 0,
+	COND_EQ,
+	COND_NE,
+	COND_LT,
+	COND_GT,
+	COND_LE,
+	COND_GE
+};
+
+#define MAX_POINTS 128
+
+typedef struct {
+	UINT32 adr;
+	int bank;             /* -1: any bank */
+	int cpu;              /* -1: any CPU */
+	int enabled;
+	int temp;             /* one-shot (run-to/step-over/step-out) */
+	int cond_op;          /* COND_NONE for unconditional */
+	int cond_reg;         /* cpu core register id */
+	UINT32 cond_val;
+	char cond_str[24];    /* original condition text for display */
+	UINT32 hit_count;     /* number of (condition-true) hits so far */
+	UINT32 ignore_count;  /* skip this many hits before halting */
+} breakpoint_t;
+
+static breakpoint_t breakpoints[MAX_POINTS];
+static int breakpoint_count = 0;
+
+typedef struct {
+	UINT32 adr;
+	int len;              /* watched range is [adr, adr+len) */
+	int mode;             /* REMOTE_DEBUG_WP_* */
+	int bank;             /* -1: any bank (only relevant for 0x4000-0x7FFF) */
+	int cond_op;          /* COND_NONE, or compare the byte at adr to cond_val */
+	UINT8 cond_val;
+	int enabled;
+} watchpoint_t;
+
+static watchpoint_t watchpoints[MAX_POINTS];
+static int watchpoint_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* Memory access trace                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	UINT32 adr;
+	int length;
+	int write;
+	UINT32 value;   /* value written (writes only) */
+	UINT32 pc;
+	int cpunum;
+	int bank;
+} trace_entry_t;
+
+#define TRACE_LOG_SIZE 1024
+static trace_entry_t trace_log[TRACE_LOG_SIZE];
+static int trace_head = 0;
+static int trace_count = 0;
+static UINT32 trace_total = 0;  /* entries recorded since the last clear */
+
+typedef struct {
+	UINT32 adr;
+	int len;
+	int mode;   /* REMOTE_DEBUG_WP_READ/WRITE/RW */
+	int bank;   /* -1: any bank */
+} trace_range_t;
+
+#define TRACE_ADDR_MAX 128
+static trace_range_t trace_ranges[TRACE_ADDR_MAX];
+static int trace_addr_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* Timed switch pulses                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	int sw;
+	int heldval;   /* value re-asserted every frame during the pulse */
+	int offval;    /* value to restore when the pulse expires */
+	UINT32 expiry; /* monotonic_ms() deadline */
+} pulse_t;
+
+#define PULSE_MAX 32
+static pulse_t pulses[PULSE_MAX];
+static int pulse_count = 0;
+
+/* Timed presses of cabinet/operator buttons (see remote_debug_set_button). */
+typedef struct {
+	UINT16 mask;   /* bit(s) of input port CORE_COREINPORT held by the pulse */
+	UINT32 expiry; /* monotonic_ms() deadline */
+} button_pulse_t;
+
+static button_pulse_t button_pulses[PULSE_MAX];
+static int button_pulse_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* CPU registers                                                      */
+/* ------------------------------------------------------------------ */
+
+/* The registers the debugger records (execution trace, tracepoints,
+ * callstack) and tests (breakpoint conditions), as register ids of the CPU
+ * core in question; NO_REG where a CPU family has no such register. PC and
+ * SP are not listed, every core knows them as REG_PC and REG_SP. */
+#define NO_REG (-1000)   /* not a register id: these are > 0, REG_PC etc. small negatives */
+
+typedef struct {
+	int a, b, x, y, u, dp, cc;
+} regmap_t;
+
+static const regmap_t regmap_m6809 = {
+	M6809_A, M6809_B, M6809_X, M6809_Y, M6809_U, M6809_DP, M6809_CC
+};
+/* M6800/1/2/3/8, HD63701, NSC8105: main CPU of Williams System 3-11 */
+static const regmap_t regmap_m6800 = {
+	M6800_A, M6800_B, M6800_X, NO_REG, NO_REG, NO_REG, M6800_CC
+};
+static const regmap_t regmap_none = {
+	NO_REG, NO_REG, NO_REG, NO_REG, NO_REG, NO_REG, NO_REG
+};
+
+/* Which of the M6800 family CPUs exist depends on the build, hence the #ifs. */
+int remote_debug_is_m6800_family(int cpu_type)
+{
+	switch (cpu_type) {
+#if (HAS_M6800)
+		case CPU_M6800:
+#endif
+#if (HAS_M6801)
+		case CPU_M6801:
+#endif
+#if (HAS_M6802)
+		case CPU_M6802:
+#endif
+#if (HAS_M6803)
+		case CPU_M6803:
+#endif
+#if (HAS_M6808)
+		case CPU_M6808:
+#endif
+#if (HAS_HD63701)
+		case CPU_HD63701:
+#endif
+#if (HAS_NSC8105)
+		case CPU_NSC8105:
+#endif
+			return 1;
+		default:
+			return 0;
+	}
+}
+
+static const regmap_t *regmap_for_type(int cpu_type)
+{
+	if (cpu_type == CPU_M6809)
+		return &regmap_m6809;
+	if (remote_debug_is_m6800_family(cpu_type))
+		return &regmap_m6800;
+	return &regmap_none;
+}
+
+/* Register map of the CPU that is executing right now. */
+static const regmap_t *active_regmap(void)
+{
+	int cpu = cpu_getactivecpu();
+	if (!Machine || cpu < 0)
+		return &regmap_none;
+	return regmap_for_type(Machine->drv->cpu[cpu].cpu_type);
+}
+
+/* Value of a register of the active CPU, 0 if it has no such register. */
+#define ACTIVE_REG(map, reg)  (((map)->reg != NO_REG) ? activecpu_get_reg((map)->reg) : 0)
+
+/* Battery backed memory blocks, as reported by core_nvram(). */
+typedef struct {
+	UINT8 *mem;
+	size_t length;
+} nvram_block_t;
+
+#define NVRAM_BLOCK_MAX 8
+static nvram_block_t nvram_blocks[NVRAM_BLOCK_MAX];
+static int nvram_block_count = 0;
+
+/* Shadow of the forced-value overlay in inptport.c, which can only be
+ * written as a whole: lets -holdport, /api/input/port and the per-button
+ * presses of /api/input/button change their own bits without clobbering
+ * each other's. */
+static unsigned short port_force[MAX_INPUT_PORTS];
+
+/* ------------------------------------------------------------------ */
+/* Object monitoring / action log                                     */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	int type;       /* REMOTE_DEBUG_OBJ_* */
+	int id;         /* switch/lamp number or solenoid number */
+	int last;       /* last sampled state */
+	int brk;        /* halt execution when this object changes */
+} monitor_t;
+
+#define MONITOR_MAX 64
+static monitor_t monitors[MONITOR_MAX];
+static int monitor_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* Execution trace / coverage / tracepoints (per-instruction hook)    */
+/* ------------------------------------------------------------------ */
+
+/* Execution trace: ring buffer of the most recently executed instructions,
+ * for answering "how did I get here" after a halt. */
+typedef struct {
+	UINT16 pc;
+	INT16  bank;
+	UINT8  a, b;
+	UINT16 x;
+} exec_trace_t;
+
+#define EXEC_TRACE_SIZE 8192
+static exec_trace_t exec_trace[EXEC_TRACE_SIZE];
+static int exec_trace_head = 0;
+static int exec_trace_count = 0;
+static volatile sig_atomic_t exec_trace_enabled = 0;
+
+/* Coverage: a bitmap over an "effective ROM address" so banked code is
+ * tracked per bank. Allocated lazily when coverage is first enabled. */
+static UINT8 *coverage_bitmap = NULL;
+static UINT32 coverage_bits = 0;    /* number of addressable bits */
+static UINT32 coverage_count = 0;   /* distinct addresses executed */
+static volatile sig_atomic_t coverage_enabled = 0;
+
+/* Tracepoints: like breakpoints but log a register snapshot and continue. */
+typedef struct {
+	UINT32 addr;
+	int bank;
+	int cpu;              /* -1: any CPU */
+	UINT32 hits;
+} tracepoint_t;
+
+static tracepoint_t tracepoints[MAX_POINTS];
+static int tracepoint_count = 0;
+
+typedef struct {
+	UINT32 pc;
+	int bank;
+	UINT16 x, y, u, s;
+	UINT8 a, b, dp, cc;
+} tp_log_t;
+
+#define TP_LOG_SIZE 512
+static tp_log_t tp_log[TP_LOG_SIZE];
+static int tp_head = 0;
+static int tp_count = 0;
+
+typedef struct {
+	int type;
+	int id;
+	int val;
+	UINT32 time;
+} action_t;
+
+#define ACTION_LOG_SIZE 512
+static action_t action_log[ACTION_LOG_SIZE];
+static int action_head = 0;
+static int action_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* Code instrumentation (PC hit counting)                             */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	UINT32 addr;
+	int bank;       /* -1: any bank */
+	int cpu;        /* -1: any CPU */
+	UINT32 count;
+} instrument_t;
+
+#define INSTRUMENT_MAX 128
+static instrument_t instruments[INSTRUMENT_MAX];
+static int instrument_count = 0;
+
+/* ------------------------------------------------------------------ */
+/* Memory value scan                                                  */
+/* ------------------------------------------------------------------ */
+
+#define SCAN_MAX 0x2000
+static int    scan_cpu = 0;
+static UINT32 scan_base = 0;
+static int    scan_size = 0;          /* 0 = no active scan */
+static UINT8  scan_snapshot[SCAN_MAX];
+static UINT8  scan_candidate[SCAN_MAX]; /* 1 = offset still matches */
+
+/* ------------------------------------------------------------------ */
+/* Lightweight game-state checkpoints (RAM + main CPU registers)      */
+/* ------------------------------------------------------------------ */
+
+#define SAVESTATE_SLOTS 8
+
+typedef struct {
+	char   name[32];
+	int    used;
+	UINT8 *ram;           /* contents of all RAM blocks, one after the other */
+	size_t ramlen;
+	UINT32 pc, s, u, x, y;
+	UINT8  a, b, dp, cc;
+} savestate_t;
+
+static savestate_t savestates[SAVESTATE_SLOTS];
+
+/* ------------------------------------------------------------------ */
+/* DMD frame recorder                                                 */
+/* ------------------------------------------------------------------ */
+
+#define DMD_REC_FRAMES 512    /* ring capacity (~8s at 60Hz) */
+#define DMD_REC_PIX    4096   /* max pixels per frame (128x32) */
+
+typedef struct {
+	UINT32 t;                 /* monotonic_ms() timestamp */
+	UINT8  pix[DMD_REC_PIX];  /* one luminance byte per pixel */
+} dmd_frame_t;
+
+static dmd_frame_t *dmd_rec = NULL;   /* allocated lazily on first use */
+static int dmd_rec_head = 0;
+static int dmd_rec_count = 0;
+static int dmd_rec_w = 0, dmd_rec_h = 0;
+static volatile sig_atomic_t dmd_recording = 0;
+
+/* ------------------------------------------------------------------ */
+/* Callstack                                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	UINT32 caller;    /* address of the call instruction */
+	UINT32 receiver;  /* call target */
+	int bank;
+	UINT16 pc, u, s, x, y;  /* pc is the return address */
+	UINT8 a, b, dp, cc;
+} callstack_entry_t;
+
+#define CALLSTACK_SIZE 128
+static callstack_entry_t callstack[CALLSTACK_SIZE];
+static int callstack_ptr = 0;
+
+/* ------------------------------------------------------------------ */
+/* Messages and SSE events                                            */
+/* ------------------------------------------------------------------ */
+
+#define MSG_QUEUE_SIZE 50
+#define MSG_LEN 128
+static char msg_queue[MSG_QUEUE_SIZE][MSG_LEN];
+static int msg_head = 0;
+static int msg_count = 0;
+
+#define EVENT_QUEUE_SIZE 32
+#define EVENT_LEN 320
+static char event_queue[EVENT_QUEUE_SIZE][EVENT_LEN];
+static int event_head = 0;  /* next slot to write */
+static int event_tail = 0;  /* next slot to read */
+
+void remote_debug_lock(void)   { pthread_mutex_lock(&mame_mutex); }
+void remote_debug_unlock(void) { pthread_mutex_unlock(&mame_mutex); }
+
+/* Read a byte, optionally from a specific WPC ROM bank.
+ *
+ * The WPC banked ROM window is 0x4000-0x7FFF; a bank of -1 (or any address
+ * outside that window, or a non-WPC machine) reads through the CPU's current
+ * memory map. When a bank is given for an address in the window, the byte is
+ * read directly from the ROM region without touching live banking, so it is
+ * side-effect free. The caller must hold the debugger lock. */
+/* Nonzero if CPU `cpu` exists and has a memory map. Audio CPUs are left
+ * uninitialised when sound is disabled (-nosound), see cpu_pre_run() in
+ * cpuexec.c; touching their memory crashes.
+ * The caller must hold the debugger lock. */
+static int cpu_has_memory(int cpu)
+{
+	return Machine && cpu >= 0 && cpu < cpu_gettotalcpu()
+	       && (!(Machine->drv->cpu[cpu].cpu_flags & CPU_AUDIO_CPU) || Machine->sample_rate != 0);
+}
+
+/* Banked memory is not accessed through the memory system. Bank numbers
+ * are global, and so are the bank pointer and the offset of a bank's
+ * handler - but drivers give the same number to two CPUs at different
+ * addresses (the WPC main CPU maps bank 4 at 0x3000, the WPC sound CPU at
+ * 0x4000). The memory system then serves the CPU that was set up last; an
+ * access through the other one ends up far outside the bank. The game
+ * never goes there, but a memory dump does - and took the emulator down.
+ *
+ * find_bank() returns the bank an address of an 8-bit CPU is mapped to (0 if
+ * it is not banked) and the first address of that mapping; bank_owner() the
+ * CPU a bank number belongs to. */
+static int find_bank(int cpu, UINT32 addr, int write, UINT32 *start)
+{
+	if (cpunum_databus_width(cpu) != 8)
+		return 0;
+	if (write) {
+		const struct Memory_WriteAddress *mwa = Machine->drv->cpu[cpu].memory_write;
+		for (; mwa && !IS_MEMPORT_END(mwa); mwa++) {
+			FPTR bank = (FPTR)mwa->handler;
+			if (IS_MEMPORT_MARKER(mwa) || addr < mwa->start || addr > mwa->end)
+				continue;
+			*start = mwa->start;
+			return (bank >= STATIC_BANK1 && bank <= STATIC_BANKMAX) ? (int)bank : 0;
+		}
+	}
+	else {
+		const struct Memory_ReadAddress *mra = Machine->drv->cpu[cpu].memory_read;
+		for (; mra && !IS_MEMPORT_END(mra); mra++) {
+			FPTR bank = (FPTR)mra->handler;
+			if (IS_MEMPORT_MARKER(mra) || addr < mra->start || addr > mra->end)
+				continue;
+			*start = mra->start;
+			return (bank >= STATIC_BANK1 && bank <= STATIC_BANKMAX) ? (int)bank : 0;
+		}
+	}
+	return 0;
+}
+
+static int bank_owner(int bank)
+{
+	int cpu;
+	/* the memory maps are set up in CPU order, the last one wins */
+	for (cpu = cpu_gettotalcpu() - 1; cpu >= 0; cpu--) {
+		const struct Memory_ReadAddress *mra = Machine->drv->cpu[cpu].memory_read;
+		const struct Memory_WriteAddress *mwa = Machine->drv->cpu[cpu].memory_write;
+		if (cpunum_databus_width(cpu) != 8)
+			continue;
+		for (; mra && !IS_MEMPORT_END(mra); mra++)
+			if (!IS_MEMPORT_MARKER(mra) && (FPTR)mra->handler == (FPTR)bank)
+				return cpu;
+		for (; mwa && !IS_MEMPORT_END(mwa); mwa++)
+			if (!IS_MEMPORT_MARKER(mwa) && (FPTR)mwa->handler == (FPTR)bank)
+				return cpu;
+	}
+	return -1;
+}
+
+/* The byte at a banked address, or NULL if the bank is not set or belongs to
+ * another CPU - whose memory it would be that gets read or changed. */
+static UINT8 *banked_byte(int cpu, int bank, UINT32 addr, UINT32 start)
+{
+	if (!cpu_bankbase[bank] || bank_owner(bank) != cpu)
+		return NULL;
+	return cpu_bankbase[bank] + (addr - start);
+}
+
+/* The ROM page a WPC bank number selects. The hardware decodes only the
+ * bits the ROM size needs (wpc.c: data & pageMask) while games write the
+ * full bank number (0x20-0x3F with a 512K ROM), so the raw number must not
+ * index the ROM region: that lands past its end. */
+UINT32 remote_debug_wpc_rom_page(int bank)
+{
+	int romlen = memory_region_length(WPC_ROMREGION);
+	UINT32 pages = (romlen > 0) ? (UINT32)romlen / 0x4000 : 0;
+	return pages ? ((UINT32)bank & (pages - 1)) : (UINT32)bank;
+}
+
+UINT8 remote_debug_read_byte(int cpu, UINT32 addr, int bank)
+{
+	UINT32 start = 0;
+	int membank;
+	if (bank >= 0 && cpu == 0 && wpc_ram && addr >= 0x4000 && addr < 0x8000) {
+		UINT8 *rom = memory_region(WPC_ROMREGION);
+		if (rom) {
+			UINT32 off = remote_debug_wpc_rom_page(bank) * 0x4000 + (addr - 0x4000);
+			if (off < (UINT32)memory_region_length(WPC_ROMREGION))
+				return rom[off];
+		}
+	}
+	if (!cpu_has_memory(cpu))
+		return 0;
+	membank = find_bank(cpu, addr, 0, &start);
+	if (membank) {
+		const UINT8 *p = banked_byte(cpu, membank, addr, start);
+		return p ? *p : 0;
+	}
+	return cpunum_read_byte(cpu, addr);
+}
+
+/* Monotonic milliseconds since an arbitrary epoch (for timestamps/pulses). */
+static UINT32 monotonic_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (UINT32)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+char *remote_debug_json_escape(char *dst, int dstlen, const char *src)
+{
+	int o = 0;
+	dst[0] = 0;
+	if (!src)
+		return dst;
+	while (*src && o < dstlen - 7) {
+		unsigned char c = (unsigned char)*src++;
+		if (c == '"' || c == '\\') {
+			dst[o++] = '\\';
+			dst[o++] = (char)c;
+		}
+		else if (c < 0x20) {
+			o += snprintf(dst + o, (size_t)(dstlen - o), "\\u%04x", c);
+		}
+		else {
+			dst[o++] = (char)c;
+		}
+	}
+	dst[o] = 0;
+	return dst;
+}
+
+/* Queue a JSON event object for the SSE clients (drops the oldest event
+ * when the queue is full). Takes the lock itself. */
+static void publish_event(const char *fmt, ...)
+{
+	va_list ap;
+	remote_debug_lock();
+	va_start(ap, fmt);
+	vsnprintf(event_queue[event_head], EVENT_LEN, fmt, ap);
+	va_end(ap);
+	event_head = (event_head + 1) % EVENT_QUEUE_SIZE;
+	if (event_head == event_tail)
+		event_tail = (event_tail + 1) % EVENT_QUEUE_SIZE;
+	remote_debug_unlock();
+}
+
+/* forward declaration; defined with the checkpoints below */
+static void savestate_free_all(void);
+
+/* forward declaration; defined with the callstack hooks below */
+static void callstack_prune(UINT32 sp);
+
+/* forward declarations; defined with the pulse implementation below */
+static void service_pulses(void);
+static void pulse_tick(int reassert);
+
+/* forward declaration; defined with the switch/input implementation below */
+static void apply_holdport_option(void);
+
+int remote_debug_next_event(char *buf, int maxlen)
+{
+	int have = 0;
+	/* The HTTP server thread calls this on every poll tick, so it is a
+	 * convenient pause-independent place to expire timed switch pulses. */
+	service_pulses();
+	remote_debug_lock();
+	if (event_tail != event_head) {
+		strncpy(buf, event_queue[event_tail], (size_t)maxlen - 1);
+		buf[maxlen - 1] = 0;
+		event_tail = (event_tail + 1) % EVENT_QUEUE_SIZE;
+		have = 1;
+	}
+	remote_debug_unlock();
+	return have;
+}
+
+void remote_debug_add_message(const char *msg)
+{
+	char esc[2 * MSG_LEN];
+	remote_debug_lock();
+	strncpy(msg_queue[msg_head], msg, MSG_LEN - 1);
+	msg_queue[msg_head][MSG_LEN - 1] = 0;
+	msg_head = (msg_head + 1) % MSG_QUEUE_SIZE;
+	if (msg_count < MSG_QUEUE_SIZE)
+		msg_count++;
+	remote_debug_unlock();
+	publish_event("{\"event\": \"message\", \"text\": \"%s\"}",
+	              remote_debug_json_escape(esc, (int)sizeof(esc), msg));
+}
+
+/* ------------------------------------------------------------------ */
+/* Growable string buffer for the JSON dump functions                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+	char *buf;
+	int len;
+	int cap;
+} strbuf_t;
+
+static void sb_init(strbuf_t *sb, int initial)
+{
+	sb->buf = malloc((size_t)initial);
+	sb->cap = sb->buf ? initial : 0;
+	sb->len = 0;
+	if (sb->buf)
+		sb->buf[0] = 0;
+}
+
+static void sb_appendf(strbuf_t *sb, const char *fmt, ...)
+{
+	va_list ap;
+	int need;
+
+	if (!sb->buf)
+		return;
+	va_start(ap, fmt);
+	need = vsnprintf(sb->buf + sb->len, (size_t)(sb->cap - sb->len), fmt, ap);
+	va_end(ap);
+	if (need < 0)
+		return;
+	if (need >= sb->cap - sb->len) {
+		int newcap = sb->cap * 2;
+		char *newbuf;
+		while (newcap - sb->len <= need)
+			newcap *= 2;
+		newbuf = realloc(sb->buf, (size_t)newcap);
+		if (!newbuf)
+			return;  /* keep the truncated content */
+		sb->buf = newbuf;
+		sb->cap = newcap;
+		va_start(ap, fmt);
+		need = vsnprintf(sb->buf + sb->len, (size_t)(sb->cap - sb->len), fmt, ap);
+		va_end(ap);
+		if (need < 0)
+			return;
+	}
+	sb->len += need;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lifecycle                                                          */
+/* ------------------------------------------------------------------ */
+
+void remote_debug_init(void)
+{
+	pthread_mutexattr_t attr;
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+	pthread_mutex_init(&mame_mutex, &attr);
+	pthread_mutexattr_destroy(&attr);
+
+	if (pmoptions.start_paused) {
+		is_paused = 1;
+		printf("Remote Debugger: paused on start\n");
+	}
+	apply_holdport_option();
+	should_quit = 0;
+	step_requested = 0;
+	step_done = 0;
+	reset_pending = 0;
+	halt_cpu = 0;
+	breakpoint_count = 0;
+	watchpoint_count = 0;
+	msg_head = msg_count = 0;
+	event_head = event_tail = 0;
+	trace_head = trace_count = 0;
+	trace_addr_count = 0;
+	callstack_ptr = 0;
+	pulse_count = 0;
+	button_pulse_count = 0;
+	nvram_block_count = 0;
+	monitor_count = 0;
+	action_head = action_count = 0;
+	instrument_count = 0;
+	scan_size = 0;
+	dmd_recording = 0;
+	dmd_rec_head = dmd_rec_count = 0;
+	savestate_free_all();
+	exec_trace_enabled = 0;
+	exec_trace_head = exec_trace_count = 0;
+	coverage_enabled = 0;
+	coverage_count = 0;
+	tracepoint_count = 0;
+	tp_head = tp_count = 0;
+	remote_debug_ready = 1;
+	http_server_start(pmoptions.http_port, api_handler, remote_debug_next_event);
+}
+
+void remote_debug_exit(void)
+{
+	remote_debug_ready = 0;
+	/* http_server_stop() joins the server thread, so no handler can hold
+	 * the mutex once it returns and destroying the mutex is safe. */
+	http_server_stop();
+	if (dmd_rec) {
+		free(dmd_rec);
+		dmd_rec = NULL;
+	}
+	if (coverage_bitmap) {
+		free(coverage_bitmap);
+		coverage_bitmap = NULL;
+	}
+	savestate_free_all();
+	pthread_mutex_destroy(&mame_mutex);
+}
+
+/* ------------------------------------------------------------------ */
+/* Execution control                                                  */
+/* ------------------------------------------------------------------ */
+
+int remote_debug_is_paused(void)
+{
+	if (should_quit)
+		return 0;
+	/* A pending step lets the timeslice start; the instruction hook then
+	   lets exactly one instruction of the halted CPU through. */
+	if (step_requested)
+		return 0;
+	if (is_paused)
+		usleep(10000);
+	return is_paused;
+}
+
+/* Hold the emulator thread, in front of the next instruction of the active
+ * CPU, for as long as execution is paused. This is what makes a halt exact:
+ * the timeslice loop in cpuexec.c can only pause between timeslices, i.e.
+ * many instructions later. A step lets one instruction through.
+ * Called from the instruction hook with the debugger lock held; the lock is
+ * released while waiting so that the HTTP thread can inspect the machine. */
+static void wait_while_paused(void)
+{
+	if (step_done) {
+		step_done = 0;
+		publish_event("{\"event\": \"halt\", \"reason\": \"step\", \"pc\": %u}",
+		              activecpu_get_reg(REG_PC));
+	}
+	remote_debug_unlock();
+	while (is_paused && !step_requested && !should_quit && !reset_pending)
+		usleep(5000);
+	remote_debug_lock();
+	if (should_quit || reset_pending) {
+		/* neither can happen before this timeslice is over */
+		activecpu_abort_timeslice();
+		return;
+	}
+	if (is_paused && step_requested) {
+		step_requested = 0;
+		step_done = 1;
+	}
+}
+
+/* Called by cpuexec.c when the machine (re)starts. */
+void remote_debug_reset_done(void)
+{
+	reset_pending = 0;
+}
+
+void remote_debug_set_paused(int paused)
+{
+	int was = is_paused;
+	if (paused && !was)
+		halt_cpu = 0;
+	is_paused = paused ? 1 : 0;
+	if (was != is_paused)
+		publish_event("{\"event\": \"%s\", \"reason\": \"user\"}",
+		              is_paused ? "halt" : "resume");
+}
+
+void remote_debug_step(void)
+{
+	is_paused = 1;
+	step_requested = 1;
+	publish_event("{\"event\": \"step\"}");
+}
+
+/* Same as the reset key (F3) of the user interface: the machine driver is
+ * stopped and re-initialised and all CPUs start again at their reset
+ * vector. NVRAM contents, breakpoints and the paused state are kept, so a
+ * reset while paused halts on the first instruction after the reset. */
+void remote_debug_reset(void)
+{
+	remote_debug_lock();
+	reset_pending = 1;
+	machine_reset();
+	callstack_ptr = 0;
+	remote_debug_unlock();
+	remote_debug_add_message("Machine reset");
+	publish_event("{\"event\": \"reset\"}");
+}
+
+void remote_debug_quit(void)
+{
+	printf("Remote Debugger: quit requested\n");
+	should_quit = 1;
+	publish_event("{\"event\": \"quit\"}");
+}
+
+int remote_debug_should_quit(void)
+{
+	return should_quit;
+}
+
+/* ------------------------------------------------------------------ */
+/* Breakpoints                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Resolve a register name for breakpoint conditions to the register id of
+ * the given CPU type; NO_REG if that CPU has no register of this name. */
+static int resolve_cond_register(int cpu_type, const char *name, int len)
+{
+	const regmap_t *map = regmap_for_type(cpu_type);
+	if (len == 1) {
+		switch (name[0]) {
+			case 'A': return map->a;
+			case 'B': return map->b;
+			case 'X': return map->x;
+			case 'Y': return map->y;
+			case 'U': return map->u;
+			case 'S': return REG_SP;
+			default: break;
+		}
+	}
+	else if (len == 2) {
+		if (strncmp(name, "PC", 2) == 0) return REG_PC;
+		if (strncmp(name, "SP", 2) == 0) return REG_SP;
+		if (strncmp(name, "CC", 2) == 0) return map->cc;
+		if (strncmp(name, "DP", 2) == 0) return map->dp;
+	}
+	return NO_REG;
+}
+
+/* Parse "REG==HEXVAL" style conditions. Returns 0 on success. */
+static int parse_condition(const char *cond, int cpu_type, int *op, int *reg, UINT32 *val)
+{
+	static const struct { const char *sym; int op; } ops[] = {
+		{"==", COND_EQ}, {"!=", COND_NE}, {"<=", COND_LE},
+		{">=", COND_GE}, {"<", COND_LT}, {">", COND_GT}
+	};
+	size_t i;
+
+	*op = COND_NONE;
+	if (!cond || !cond[0])
+		return 0;
+	for (i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+		const char *p = strstr(cond, ops[i].sym);
+		if (p && p > cond) {
+			int r = resolve_cond_register(cpu_type, cond, (int)(p - cond));
+			const char *v = p + strlen(ops[i].sym);
+			char *end = NULL;
+			UINT32 value;
+			if (r == NO_REG || !*v)
+				return -1;
+			value = (UINT32)strtoul(v, &end, 16);
+			if (end == v)
+				return -1;
+			*op = ops[i].op;
+			*reg = r;
+			*val = value;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static int cond_matches(const breakpoint_t *bp)
+{
+	UINT32 v;
+	if (bp->cond_op == COND_NONE)
+		return 1;
+	v = activecpu_get_reg(bp->cond_reg);
+	switch (bp->cond_op) {
+		case COND_EQ: return v == bp->cond_val;
+		case COND_NE: return v != bp->cond_val;
+		case COND_LT: return v <  bp->cond_val;
+		case COND_GT: return v >  bp->cond_val;
+		case COND_LE: return v <= bp->cond_val;
+		case COND_GE: return v >= bp->cond_val;
+		default:      return 1;
+	}
+}
+
+/* Internal add; temp breakpoints are silent. */
+static int breakpoint_add_internal(UINT32 adr, int bank, int cpu, int temp,
+                                   const char *cond, UINT32 ignore)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (breakpoint_count < MAX_POINTS) {
+		breakpoint_t *bp = &breakpoints[breakpoint_count];
+		memset(bp, 0, sizeof(*bp));
+		bp->adr = adr;
+		bp->bank = bank;
+		bp->cpu = cpu;
+		bp->enabled = 1;
+		bp->temp = temp;
+		bp->ignore_count = ignore;
+		/* a condition names a register of the CPU the breakpoint is for; one
+		   for "any CPU" is taken to mean the main CPU */
+		int cond_cpu = (cpu >= 0 && cpu < cpu_gettotalcpu()) ? cpu : 0;
+		int cond_type = Machine ? Machine->drv->cpu[cond_cpu].cpu_type : CPU_M6809;
+		if (parse_condition(cond, cond_type, &bp->cond_op, &bp->cond_reg, &bp->cond_val) == 0) {
+			if (bp->cond_op != COND_NONE) {
+				strncpy(bp->cond_str, cond, sizeof(bp->cond_str) - 1);
+				bp->cond_str[sizeof(bp->cond_str) - 1] = 0;
+			}
+			breakpoint_count++;
+			result = 0;
+			if (!temp) {
+				char b[MSG_LEN];
+				if (bank != -1)
+					snprintf(b, sizeof(b), "BP added at %02X:%04X", bank, adr);
+				else
+					snprintf(b, sizeof(b), "BP added at %04X", adr);
+				remote_debug_add_message(b);
+			}
+		}
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+int remote_debug_breakpoint_add_ex(UINT32 adr, int bank, int cpu, const char *cond, UINT32 ignore)
+{
+	return breakpoint_add_internal(adr, bank, cpu, 0, cond, ignore);
+}
+
+void remote_debug_breakpoint_add(UINT32 adr)
+{
+	breakpoint_add_internal(adr, -1, -1, 0, NULL, 0);
+}
+
+void remote_debug_breakpoint_add_banked(UINT32 adr, int bank)
+{
+	breakpoint_add_internal(adr, bank, -1, 0, NULL, 0);
+}
+
+void remote_debug_breakpoint_clear(void)
+{
+	remote_debug_lock();
+	breakpoint_count = 0;
+	remote_debug_unlock();
+	remote_debug_add_message("Breakpoints cleared");
+}
+
+void remote_debug_breakpoint_toggle(int index)
+{
+	remote_debug_lock();
+	if (index >= 0 && index < breakpoint_count)
+		breakpoints[index].enabled = !breakpoints[index].enabled;
+	remote_debug_unlock();
+}
+
+void remote_debug_breakpoint_delete(int index)
+{
+	int i;
+	remote_debug_lock();
+	if (index >= 0 && index < breakpoint_count) {
+		for (i = index; i < breakpoint_count - 1; i++)
+			breakpoints[i] = breakpoints[i + 1];
+		breakpoint_count--;
+	}
+	remote_debug_unlock();
+}
+
+/* Per-instruction hook. Runs on the emulator thread which holds the
+ * debugger lock for the whole timeslice (see cpuexec.c), so plain reads
+ * of the breakpoint table are safe here without locking again. */
+/* Effective address for the coverage bitmap: banked-window code is indexed
+ * per bank so different banks at the same CPU address are distinguished. */
+static UINT32 coverage_index(UINT32 pc, int bank)
+{
+	if (bank >= 0 && pc >= 0x4000 && pc < 0x8000)
+		return 0x10000 + remote_debug_wpc_rom_page(bank) * 0x4000 + (pc - 0x4000);
+	return pc & 0xFFFF;
+}
+
+void remote_debug_breakpoint_hook(void)
+{
+	const regmap_t *regs;
+	UINT32 pc;
+	int current_bank, current_cpu, i;
+
+	if (breakpoint_count == 0 && instrument_count == 0 && tracepoint_count == 0
+			&& !exec_trace_enabled && !coverage_enabled && !is_paused)
+		return;
+	pc = activecpu_get_reg(REG_PC);
+	current_bank = wpc_get_bank();
+	/* Which processor is running matters on multi-CPU boards: the two address
+	   spaces overlap, so an unfiltered point on a low address counts hits from
+	   whichever core happens to be there. */
+	current_cpu = cpu_getactivecpu();
+	/* the registers recorded below, in terms of the CPU that is running */
+	regs = active_regmap();
+
+	/* execution trace: record this instruction in the ring buffer */
+	if (exec_trace_enabled) {
+		exec_trace_t *e = &exec_trace[exec_trace_head];
+		e->pc = (UINT16)pc;
+		e->bank = (INT16)current_bank;
+		e->a = (UINT8)ACTIVE_REG(regs, a);
+		e->b = (UINT8)ACTIVE_REG(regs, b);
+		e->x = (UINT16)ACTIVE_REG(regs, x);
+		exec_trace_head = (exec_trace_head + 1) % EXEC_TRACE_SIZE;
+		if (exec_trace_count < EXEC_TRACE_SIZE)
+			exec_trace_count++;
+	}
+
+	/* coverage: mark this address as executed */
+	if (coverage_enabled && coverage_bitmap) {
+		UINT32 idx = coverage_index(pc, current_bank);
+		if (idx < coverage_bits) {
+			UINT8 mask = (UINT8)(1 << (idx & 7));
+			if (!(coverage_bitmap[idx >> 3] & mask)) {
+				coverage_bitmap[idx >> 3] |= mask;
+				coverage_count++;
+			}
+		}
+	}
+
+	/* tracepoints: log a register snapshot and continue (no halt) */
+	for (i = 0; i < tracepoint_count; i++) {
+		if (tracepoints[i].addr == pc
+				&& (tracepoints[i].bank == -1 || tracepoints[i].bank == current_bank)
+				&& (tracepoints[i].cpu == -1 || tracepoints[i].cpu == current_cpu)) {
+			tp_log_t *t = &tp_log[tp_head];
+			tracepoints[i].hits++;
+			t->pc = pc;
+			t->bank = current_bank;
+			t->a = (UINT8)ACTIVE_REG(regs, a);
+			t->b = (UINT8)ACTIVE_REG(regs, b);
+			t->x = (UINT16)ACTIVE_REG(regs, x);
+			t->y = (UINT16)ACTIVE_REG(regs, y);
+			t->u = (UINT16)ACTIVE_REG(regs, u);
+			t->s = (UINT16)activecpu_get_reg(REG_SP);
+			t->dp = (UINT8)ACTIVE_REG(regs, dp);
+			t->cc = (UINT8)ACTIVE_REG(regs, cc);
+			tp_head = (tp_head + 1) % TP_LOG_SIZE;
+			if (tp_count < TP_LOG_SIZE)
+				tp_count++;
+		}
+	}
+
+	/* code instrumentation: count passes over marked addresses */
+	for (i = 0; i < instrument_count; i++) {
+		if (instruments[i].addr == pc
+				&& (instruments[i].bank == -1 || instruments[i].bank == current_bank)
+				&& (instruments[i].cpu == -1 || instruments[i].cpu == current_cpu))
+			instruments[i].count++;
+	}
+
+	for (i = 0; i < breakpoint_count; i++) {
+		breakpoint_t *bp = &breakpoints[i];
+		if (!bp->enabled || pc != bp->adr)
+			continue;
+		if (bp->bank != -1 && current_bank != bp->bank)
+			continue;
+		if (bp->cpu != -1 && current_cpu != bp->cpu)
+			continue;
+		if (!cond_matches(bp))
+			continue;
+		bp->hit_count++;
+		if (!bp->temp && bp->hit_count <= bp->ignore_count)
+			continue;
+
+		/* halt in front of this instruction, see below */
+		is_paused = 1;
+		halt_cpu = current_cpu;
+		step_done = 0;
+		{
+			char b[MSG_LEN];
+			if (current_bank != -1)
+				snprintf(b, sizeof(b), "Halt: BP at %02X:%04X", current_bank, pc);
+			else
+				snprintf(b, sizeof(b), "Halt: BP at %04X", pc);
+			/* Temporary breakpoints (run to, step over, step out) end with the
+			   halt, whichever point caused it: one that was not reached -
+			   the subroutine did not return - must not fire later on. */
+			{
+				int j, n = 0;
+				for (j = 0; j < breakpoint_count; j++) {
+					if (!breakpoints[j].temp)
+						breakpoints[n++] = breakpoints[j];
+				}
+				breakpoint_count = n;
+			}
+			remote_debug_add_message(b);
+			publish_event("{\"event\": \"halt\", \"reason\": \"bp\", \"pc\": %u, \"bank\": %d}",
+			              pc, current_bank);
+			printf("Remote Debugger: %s\n", b);
+		}
+		break;
+	}
+
+	/* paused (just now by a breakpoint, or before): stay here until resumed
+	   or stepped, so that this instruction has not been executed yet */
+	if (is_paused && current_cpu == halt_cpu)
+		wait_while_paused();
+}
+
+/* ------------------------------------------------------------------ */
+/* Watchpoints and memory access trace                                */
+/* ------------------------------------------------------------------ */
+
+void remote_debug_watchpoint_add(UINT32 adr, int len, int mode, int bank,
+                                 int cond_op, UINT8 cond_val)
+{
+	remote_debug_lock();
+	if (watchpoint_count < MAX_POINTS) {
+		char b[MSG_LEN];
+		watchpoints[watchpoint_count].adr = adr;
+		watchpoints[watchpoint_count].len = (len > 0) ? len : 1;
+		watchpoints[watchpoint_count].mode = mode;
+		watchpoints[watchpoint_count].bank = bank;
+		watchpoints[watchpoint_count].cond_op = cond_op;
+		watchpoints[watchpoint_count].cond_val = cond_val;
+		watchpoints[watchpoint_count].enabled = 1;
+		watchpoint_count++;
+		if (bank != -1)
+			snprintf(b, sizeof(b), "WP added at %02X:%04X len %d", bank, adr, (len > 0) ? len : 1);
+		else
+			snprintf(b, sizeof(b), "WP added at %04X len %d", adr, (len > 0) ? len : 1);
+		remote_debug_unlock();
+		remote_debug_add_message(b);
+		return;
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_watchpoint_clear(void)
+{
+	remote_debug_lock();
+	watchpoint_count = 0;
+	remote_debug_unlock();
+	remote_debug_add_message("Watchpoints cleared");
+}
+
+void remote_debug_watchpoint_toggle(int index)
+{
+	remote_debug_lock();
+	if (index >= 0 && index < watchpoint_count)
+		watchpoints[index].enabled = !watchpoints[index].enabled;
+	remote_debug_unlock();
+}
+
+void remote_debug_watchpoint_delete(int index)
+{
+	int i;
+	remote_debug_lock();
+	if (index >= 0 && index < watchpoint_count) {
+		for (i = index; i < watchpoint_count - 1; i++)
+			watchpoints[i] = watchpoints[i + 1];
+		watchpoint_count--;
+	}
+	remote_debug_unlock();
+}
+
+int remote_debug_trace_add(UINT32 adr, int len, int mode, int bank)
+{
+	trace_range_t *r;
+	remote_debug_lock();
+	if (Machine && cpu_gettotalcpu() > 0) {
+		/* the range must fit in the largest CPU address space */
+		UINT64 space = 0;
+		int cpu;
+		for (cpu = 0; cpu < cpu_gettotalcpu(); cpu++) {
+			UINT64 s = (UINT64)1 << cputype_address_bits(Machine->drv->cpu[cpu].cpu_type);
+			if (s > space)
+				space = s;
+		}
+		if (len < 1 || (UINT64)adr + (UINT64)len > space) {
+			remote_debug_unlock();
+			return -2;
+		}
+	}
+	if (trace_addr_count >= TRACE_ADDR_MAX) {
+		remote_debug_unlock();
+		return -1;
+	}
+	r = &trace_ranges[trace_addr_count];
+	r->adr = adr;
+	r->len = len;
+	r->mode = mode;
+	r->bank = bank;
+	trace_addr_count++;
+	remote_debug_unlock();
+	return 0;
+}
+
+void remote_debug_trace_clear(void)
+{
+	remote_debug_lock();
+	trace_addr_count = 0;
+	trace_head = 0;
+	trace_count = 0;
+	trace_total = 0;
+	remote_debug_unlock();
+}
+
+/* Nonzero if [a, a+alen) and [b, b+blen) overlap; written with
+ * differences so that it does not wrap near the top of 32 bits. */
+static int ranges_overlap(UINT32 a, UINT32 alen, UINT32 b, UINT32 blen)
+{
+	return a - b < blen || b - a < alen;
+}
+
+/* The byte at offset `offset` of a `length` byte write of `data`, in the
+ * byte order of the active CPU. */
+static UINT8 written_byte(UINT32 data, int length, UINT32 offset)
+{
+	if (activecpu_endianess() == CPU_IS_BE)
+		offset = (UINT32)length - 1 - offset;
+	return (UINT8)(data >> (8 * offset));
+}
+
+/* Memory access hook; like remote_debug_breakpoint_hook() this runs with
+ * the debugger lock effectively held by the emulator thread. */
+void remote_debug_memref(UINT32 adr, int length, int write, UINT32 data)
+{
+	int i, active_cpu, current_bank;
+
+	if (watchpoint_count == 0 && trace_addr_count == 0)
+		return;
+	active_cpu = cpu_getactivecpu();
+	if (active_cpu < 0)
+		return;
+	current_bank = wpc_get_bank();
+
+	for (i = 0; i < watchpoint_count; i++) {
+		const watchpoint_t *wp = &watchpoints[i];
+		int hit;
+		if (!wp->enabled)
+			continue;
+		if (!ranges_overlap(adr, (UINT32)length, wp->adr, (UINT32)wp->len))
+			continue;
+		/* bank filter (only meaningful for the 0x4000-0x7FFF window) */
+		if (wp->bank != -1 && current_bank != wp->bank)
+			continue;
+		hit = (wp->mode == REMOTE_DEBUG_WP_RW)
+		   || (wp->mode == REMOTE_DEBUG_WP_READ && !write)
+		   || (wp->mode == REMOTE_DEBUG_WP_WRITE && write);
+		/* optional value condition: only halt when the byte at the
+		 * watched address satisfies the comparison. This runs before the
+		 * access, so when the write covers that byte test the value being
+		 * written */
+		if (hit && wp->cond_op != COND_NONE) {
+			UINT8 v;
+			int ok;
+			if (write && wp->adr - adr < (UINT32)length)
+				v = written_byte(data, length, wp->adr - adr);
+			else
+				v = cpunum_read_byte(active_cpu, wp->adr);
+			switch (wp->cond_op) {
+				case COND_EQ: ok = (v == wp->cond_val); break;
+				case COND_NE: ok = (v != wp->cond_val); break;
+				case COND_LT: ok = (v <  wp->cond_val); break;
+				case COND_GT: ok = (v >  wp->cond_val); break;
+				case COND_LE: ok = (v <= wp->cond_val); break;
+				case COND_GE: ok = (v >= wp->cond_val); break;
+				default:      ok = 1;                   break;
+			}
+			if (!ok)
+				hit = 0;
+		}
+		if (hit) {
+			UINT32 pc = activecpu_get_reg(REG_PC);
+			char b[MSG_LEN];
+			/* the access is part of an instruction that is under way: the CPU
+			   halts in front of the next one */
+			is_paused = 1;
+			halt_cpu = active_cpu;
+			snprintf(b, sizeof(b), "Halt: WP %s at %04X (PC=%04X, Bank=%02X)",
+			         write ? "write" : "read", adr, pc, current_bank);
+			remote_debug_add_message(b);
+			publish_event("{\"event\": \"halt\", \"reason\": \"wp\", \"addr\": %u, \"pc\": %u, \"bank\": %d}",
+			              adr, pc, current_bank);
+			printf("Remote Debugger: %s\n", b);
+		}
+	}
+
+	for (i = 0; i < trace_addr_count; i++) {
+		const trace_range_t *r = &trace_ranges[i];
+		if (r->bank != -1 && current_bank != r->bank)
+			continue;
+		if (!(r->mode & (write ? REMOTE_DEBUG_WP_WRITE : REMOTE_DEBUG_WP_READ)))
+			continue;
+		if (ranges_overlap(adr, (UINT32)length, r->adr, (UINT32)r->len)) {
+			trace_entry_t *e = &trace_log[trace_head];
+			e->adr = adr;
+			e->length = length;
+			e->write = write;
+			e->value = data;
+			e->cpunum = active_cpu;
+			e->pc = activecpu_get_reg(REG_PC);
+			e->bank = current_bank;
+			trace_head = (trace_head + 1) % TRACE_LOG_SIZE;
+			if (trace_count < TRACE_LOG_SIZE)
+				trace_count++;
+			trace_total++;
+			break;
+		}
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* JSON dumps                                                         */
+/* ------------------------------------------------------------------ */
+
+void remote_debug_get_points(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"breakpoints\": [");
+	for (i = 0; i < breakpoint_count; i++) {
+		const breakpoint_t *bp = &breakpoints[i];
+		char esc[64];
+		sb_appendf(&sb,
+			"%s{\"idx\": %d, \"addr\": %u, \"bank\": %d, \"enabled\": %d, "
+			"\"temp\": %d, \"cond\": \"%s\", \"hits\": %u, \"ignore\": %u}",
+			(i > 0) ? "," : "", i, bp->adr, bp->bank, bp->enabled, bp->temp,
+			remote_debug_json_escape(esc, (int)sizeof(esc), bp->cond_str),
+			bp->hit_count, bp->ignore_count);
+	}
+	sb_appendf(&sb, "], \"watchpoints\": [");
+	for (i = 0; i < watchpoint_count; i++) {
+		const watchpoint_t *wp = &watchpoints[i];
+		static const char *opname[] = {"", "==", "!=", "<", ">", "<=", ">="};
+		char cond[16];
+		if (wp->cond_op != COND_NONE)
+			snprintf(cond, sizeof(cond), "%s%02X", opname[wp->cond_op], wp->cond_val);
+		else
+			cond[0] = 0;
+		sb_appendf(&sb,
+			"%s{\"idx\": %d, \"addr\": %u, \"len\": %d, \"mode\": %d, \"bank\": %d, \"cond\": \"%s\", \"enabled\": %d}",
+			(i > 0) ? "," : "", i, wp->adr, wp->len, wp->mode, wp->bank, cond, wp->enabled);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_messages(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"messages\": [");
+	for (i = 0; i < msg_count; i++) {
+		int idx = (msg_head - msg_count + i + MSG_QUEUE_SIZE) % MSG_QUEUE_SIZE;
+		char esc[2 * MSG_LEN];
+		sb_appendf(&sb, "%s\"%s\"", (i > 0) ? "," : "",
+		           remote_debug_json_escape(esc, (int)sizeof(esc), msg_queue[idx]));
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_callstack(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	if (Machine && cpu_gettotalcpu() > 0)
+		callstack_prune(cpunum_get_reg(0, REG_SP));
+	sb_appendf(&sb, "{\"stack\": [");
+	for (i = 0; i < callstack_ptr; i++) {
+		const callstack_entry_t *e = &callstack[i];
+		sb_appendf(&sb,
+			"%s{\"caller\": %u, \"receiver\": %u, \"bank\": %d, \"pc\": %d, "
+			"\"u\": %d, \"s\": %d, \"x\": %d, \"y\": %d, \"a\": %d, \"b\": %d, "
+			"\"dp\": %d, \"cc\": %d}",
+			(i > 0) ? "," : "", e->caller, e->receiver, e->bank, e->pc,
+			e->u, e->s, e->x, e->y, e->a, e->b, e->dp, e->cc);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_trace(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"watched\": [");
+	for (i = 0; i < trace_addr_count; i++)
+		sb_appendf(&sb, "%s{\"addr\": %u, \"bank\": %d, \"len\": %d, \"mode\": %d}",
+		           (i > 0) ? "," : "", trace_ranges[i].adr, trace_ranges[i].bank,
+		           trace_ranges[i].len, trace_ranges[i].mode);
+	sb_appendf(&sb, "], \"total\": %u, \"logs\": [", trace_total);
+	for (i = 0; i < trace_count; i++) {
+		int idx = (trace_head - trace_count + i + TRACE_LOG_SIZE) % TRACE_LOG_SIZE;
+		const trace_entry_t *e = &trace_log[idx];
+		char value[16];
+		if (e->write)
+			snprintf(value, sizeof(value), "%u", e->value);
+		else
+			strcpy(value, "null");
+		sb_appendf(&sb,
+			"%s{\"cpu\": %d, \"pc\": %u, \"adr\": %u, \"len\": %d, \"write\": %d, \"value\": %s, \"bank\": %d}",
+			(i > 0) ? "," : "", e->cpunum, e->pc, e->adr, e->length, e->write, value, e->bank);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ------------------------------------------------------------------ */
+/* Memory / register operations                                       */
+/* ------------------------------------------------------------------ */
+
+/* Write one byte. Debugger writes into the WPC RAM range go directly to
+ * the RAM array so the WPC memory protection (wpc_ram_w) cannot silently
+ * discard them; everything else goes through the CPU's memory map. */
+static void debug_write_byte(int cpu_idx, UINT32 addr, UINT8 val)
+{
+	UINT32 start = 0;
+	int bank;
+	if (cpu_idx == 0 && wpc_ram && addr < 0x3000) {
+		wpc_ram[addr] = val;
+		return;
+	}
+	if (!cpu_has_memory(cpu_idx))
+		return;
+	bank = find_bank(cpu_idx, addr, 1, &start);
+	if (bank) {
+		/* see find_bank(): never through the memory system */
+		UINT8 *p = banked_byte(cpu_idx, bank, addr, start);
+		if (p)
+			*p = val;
+		return;
+	}
+	cpunum_write_byte(cpu_idx, addr, val);
+}
+
+void remote_debug_memory_fill(int cpu_idx, UINT32 addr, int size, UINT8 val)
+{
+	remote_debug_lock();
+	if (Machine && cpu_idx >= 0 && cpu_idx < cpu_gettotalcpu()) {
+		char b[MSG_LEN];
+		int i;
+		for (i = 0; i < size; i++)
+			debug_write_byte(cpu_idx, addr + (UINT32)i, val);
+		snprintf(b, sizeof(b), "Memory fill: %04X-%04X with %02X",
+		         addr, addr + (UINT32)size - 1, val);
+		remote_debug_add_message(b);
+	}
+	remote_debug_unlock();
+}
+
+int remote_debug_memory_write_block(int cpu_idx, UINT32 addr, const UINT8 *data, int len)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (Machine && cpu_idx >= 0 && cpu_idx < cpu_gettotalcpu() && len > 0) {
+		int i;
+		for (i = 0; i < len; i++)
+			debug_write_byte(cpu_idx, addr + (UINT32)i, data[i]);
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+int remote_debug_memory_find(int cpu_idx, UINT32 addr, int size,
+                             const UINT8 *pattern, int pat_len, UINT32 *found_addr, int bank)
+{
+	int result = 0;
+	remote_debug_lock();
+	if (Machine && cpu_idx >= 0 && cpu_idx < cpu_gettotalcpu()
+			&& pat_len > 0 && size > 0 && pat_len <= size) {
+		UINT32 a;
+		for (a = addr; a <= addr + (UINT32)(size - pat_len); a++) {
+			int i, match = 1;
+			for (i = 0; i < pat_len; i++) {
+				if (remote_debug_read_byte(cpu_idx, a + (UINT32)i, bank) != pattern[i]) {
+					match = 0;
+					break;
+				}
+			}
+			if (match) {
+				*found_addr = a;
+				result = 1;
+				break;
+			}
+		}
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+void remote_debug_set_register(int cpu_idx, int reg, UINT32 val)
+{
+	remote_debug_lock();
+	if (Machine && cpu_idx >= 0 && cpu_idx < cpu_gettotalcpu()) {
+		char b[MSG_LEN];
+		/* switch context so the write reaches the right CPU core */
+		cpuintrf_push_context(cpu_idx);
+		activecpu_set_reg(reg, val);
+		cpuintrf_pop_context();
+		snprintf(b, sizeof(b), "Set reg: CPU %d, reg %d to %04X", cpu_idx, reg, val);
+		remote_debug_add_message(b);
+	}
+	remote_debug_unlock();
+}
+
+/* ------------------------------------------------------------------ */
+/* Step over / step out / run to                                      */
+/* ------------------------------------------------------------------ */
+
+/* Nonzero if a disassembled instruction calls a subroutine. */
+static int is_call_mnemonic(const char *dasm)
+{
+	static const char *calls[] = { "JSR", "BSR", "LBSR", "SWI", "CALL", "RST" };
+	size_t i;
+	while (*dasm == ' ')
+		dasm++;
+	for (i = 0; i < sizeof(calls) / sizeof(calls[0]); i++) {
+		size_t n = strlen(calls[i]);
+		if (strncasecmp(dasm, calls[i], n) == 0 && (dasm[n] == ' ' || dasm[n] == 0))
+			return 1;
+	}
+	return 0;
+}
+
+void remote_debug_step_over(void)
+{
+	remote_debug_lock();
+	if (Machine && cpu_gettotalcpu() > 0) {
+		/* While paused there is no active CPU context (the HTTP thread
+		 * calls this between timeslices), so push the main CPU. */
+		int need_ctx = (cpu_getactivecpu() < 0);
+		UINT32 pc;
+		char dasm[64];
+		int size;
+		if (need_ctx)
+			cpuintrf_push_context(halt_cpu);
+		pc = activecpu_get_reg(REG_PC);
+		activecpu_set_op_base(pc);
+		size = (int)activecpu_dasm(dasm, pc);
+		if (need_ctx)
+			cpuintrf_pop_context();
+		/* Only a subroutine call is run to the instruction behind it; anything
+		   else is a plain step - a branch or return never gets there. */
+		if (size > 0 && is_call_mnemonic(dasm)) {
+			breakpoint_add_internal(pc + (UINT32)size, -1, cpu_getactivecpu(), 1, NULL, 0);
+			is_paused = 0;
+			remote_debug_add_message("Stepping over...");
+		}
+		else {
+			remote_debug_step();
+		}
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_step_out(void)
+{
+	remote_debug_lock();
+	if (callstack_ptr > 0) {
+		const callstack_entry_t *e = &callstack[callstack_ptr - 1];
+		char b[MSG_LEN];
+		/* the ROM bank only identifies code in the banked window; elsewhere the
+		   callee may well return with a different bank paged in */
+		int bank = (e->pc >= 0x4000 && e->pc < 0x8000) ? e->bank : -1;
+		breakpoint_add_internal(e->pc, bank, 0, 1, NULL, 0);
+		is_paused = 0;
+		snprintf(b, sizeof(b), "Stepping out to %04X...", e->pc);
+		remote_debug_add_message(b);
+	}
+	else {
+		remote_debug_add_message("Step out: callstack is empty, stepping instead");
+		remote_debug_step();
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_run_to(UINT32 addr, int bank)
+{
+	char b[MSG_LEN];
+	remote_debug_lock();
+	breakpoint_add_internal(addr, bank, -1, 1, NULL, 0);
+	is_paused = 0;
+	remote_debug_unlock();
+	if (bank != -1)
+		snprintf(b, sizeof(b), "Running to %02X:%04X...", bank, addr);
+	else
+		snprintf(b, sizeof(b), "Running to %04X...", addr);
+	remote_debug_add_message(b);
+}
+
+/* ------------------------------------------------------------------ */
+/* Callstack hooks                                                    */
+/* ------------------------------------------------------------------ */
+
+/* Drop the frames the stack pointer has left behind. Counting calls and
+ * returns alone does not keep the callstack right: pinball operating systems
+ * drop return addresses and switch stacks, and each such frame would stay
+ * for good - until the table is full and nothing new gets in. A frame was
+ * entered with the stack pointer at e->s and is over once it is back there
+ * (the stack grows downwards).
+ * The caller must hold the debugger lock. */
+static void callstack_prune(UINT32 sp)
+{
+	while (callstack_ptr > 0 && callstack[callstack_ptr - 1].s <= sp)
+		callstack_ptr--;
+}
+
+/* The frame keeps SP from before the call stacked anything, so
+   callstack_prune() drops it only after the matching RTS/RTI. */
+void remote_debug_push_int(UINT32 caller, UINT32 receiver, UINT32 stacked)
+{
+	UINT16 sp;
+	/* One callstack: that of the main CPU. The sound CPUs run the same CPU
+	   cores and would mix their calls into it. */
+	if (!remote_debug_ready || cpu_getactivecpu() != 0)
+		return;
+	remote_debug_lock();
+	sp = (UINT16)(activecpu_get_reg(REG_SP) + stacked);
+	callstack_prune(sp);
+	if (callstack_ptr < CALLSTACK_SIZE) {
+		const regmap_t *regs = active_regmap();
+		callstack_entry_t *e = &callstack[callstack_ptr++];
+		e->caller = caller;
+		e->receiver = receiver;
+		e->bank = wpc_get_bank();
+		e->pc = (UINT16)activecpu_get_reg(REG_PC);  /* return address */
+		e->u = (UINT16)ACTIVE_REG(regs, u);
+		e->s = sp;
+		e->x = (UINT16)ACTIVE_REG(regs, x);
+		e->y = (UINT16)ACTIVE_REG(regs, y);
+		e->a = (UINT8)ACTIVE_REG(regs, a);
+		e->b = (UINT8)ACTIVE_REG(regs, b);
+		e->dp = (UINT8)ACTIVE_REG(regs, dp);
+		e->cc = (UINT8)ACTIVE_REG(regs, cc);
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_push_call(UINT32 caller, UINT32 receiver)
+{
+	remote_debug_push_int(caller, receiver, 0);
+}
+
+void remote_debug_pop_call(void)
+{
+	if (!remote_debug_ready || cpu_getactivecpu() != 0)
+		return;
+	remote_debug_lock();
+	if (callstack_ptr > 0)
+		callstack_ptr--;
+	remote_debug_unlock();
+}
+
+void remote_debug_reset_callstack(void)
+{
+	if (!remote_debug_ready || cpu_getactivecpu() != 0)
+		return;
+	remote_debug_lock();
+	callstack_ptr = 0;
+	remote_debug_unlock();
+}
+
+/* ------------------------------------------------------------------ */
+/* Display capture                                                    */
+/* ------------------------------------------------------------------ */
+
+static struct mame_display *last_display = NULL;
+
+void remote_debug_frame_update(struct mame_display *display)
+{
+	remote_debug_lock();
+	last_display = display;
+	/* re-assert held switch pulses (the input port clears the coin-door
+	 * column each frame) and expire finished ones */
+	pulse_tick(1);
+	remote_debug_unlock();
+	/* sample monitored objects and record DMD frames once per frame */
+	remote_debug_monitor_sample();
+	remote_debug_dmdrec_sample();
+}
+
+void remote_debug_get_screenshot_info(int *w, int *h)
+{
+	remote_debug_lock();
+	if (last_display && last_display->game_bitmap) {
+		*w = last_display->game_bitmap->width;
+		*h = last_display->game_bitmap->height;
+	}
+	else {
+		*w = 0;
+		*h = 0;
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_raw_screenshot(char **buffer, int *len)
+{
+	remote_debug_lock();
+	if (last_display && last_display->game_bitmap) {
+		struct mame_bitmap *bm = last_display->game_bitmap;
+		int width = bm->width;
+		int height = bm->height;
+		int x, y;
+		char *p;
+		*len = width * height * 3;
+		*buffer = malloc((size_t)*len);
+		p = *buffer;
+		if (p) {
+			for (y = 0; y < height; y++) {
+				for (x = 0; x < width; x++) {
+					UINT32 c;
+					if (bm->depth == 32) {
+						c = ((UINT32 **)bm->line)[y][x];
+					}
+					else {
+						rgb_t r;
+						if (bm->depth == 16)
+							c = ((UINT16 **)bm->line)[y][x];
+						else
+							c = ((UINT8 **)bm->line)[y][x];
+						r = last_display->game_palette[c];
+						c = (UINT32)r;
+					}
+					*p++ = (char)((c >> 16) & 0xFF);
+					*p++ = (char)((c >> 8) & 0xFF);
+					*p++ = (char)(c & 0xFF);
+				}
+			}
+		}
+		else {
+			*len = 0;
+		}
+	}
+	else {
+		*buffer = NULL;
+		*len = 0;
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_screenshot(char **buffer, int *len, char *content_type)
+{
+	char *raw = NULL;
+	int raw_len = 0;
+	int w, h;
+	remote_debug_lock();
+	remote_debug_get_screenshot_info(&w, &h);
+	remote_debug_get_raw_screenshot(&raw, &raw_len);
+	remote_debug_unlock();
+	if (raw) {
+		char head[64];
+		int hlen = snprintf(head, sizeof(head), "P6\n%d %d\n255\n", w, h);
+		*buffer = malloc((size_t)(raw_len + hlen));
+		if (*buffer) {
+			memcpy(*buffer, head, (size_t)hlen);
+			memcpy(*buffer + hlen, raw, (size_t)raw_len);
+			*len = raw_len + hlen;
+			strcpy(content_type, "image/x-portable-pixmap");
+		}
+		else {
+			*len = 0;
+		}
+		free(raw);
+	}
+	else {
+		*buffer = NULL;
+		*len = 0;
+	}
+}
+
+/* Provided by src/wpc/core.c */
+extern void core_get_dmd_data(int layout_idx, float **pixels, int *width, int *height);
+
+/* Convert the float DMD luminance plane to one byte per pixel. */
+static UINT8 *dmd_to_bytes(const float *px, int count)
+{
+	UINT8 *out = malloc((size_t)count);
+	int i;
+	if (!out)
+		return NULL;
+	for (i = 0; i < count; i++) {
+		float v = px[i];
+		if (v < 0.0f)
+			v = 0.0f;
+		if (v > 1.0f)
+			v = 1.0f;
+		out[i] = (UINT8)(v * 255.0f);
+	}
+	return out;
+}
+
+void remote_debug_get_dmd_screenshot(char **buffer, int *len, char *content_type)
+{
+	float *px;
+	int w, h;
+	remote_debug_lock();
+	core_get_dmd_data(0, &px, &w, &h);
+	if (px && w > 0 && h > 0) {
+		*buffer = (char *)dmd_to_bytes(px, w * h);
+		*len = *buffer ? w * h : 0;
+		strcpy(content_type, "application/octet-stream");
+	}
+	else {
+		*buffer = NULL;
+		*len = 0;
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_dmd_pnm(char **buffer, int *len, char *content_type)
+{
+	float *px;
+	int w, h;
+	remote_debug_lock();
+	core_get_dmd_data(0, &px, &w, &h);
+	if (px && w > 0 && h > 0) {
+		char head[64];
+		int hlen = snprintf(head, sizeof(head), "P5\n%d %d\n255\n", w, h);
+		UINT8 *pixels = dmd_to_bytes(px, w * h);
+		if (pixels) {
+			*buffer = malloc((size_t)(w * h + hlen));
+			if (*buffer) {
+				memcpy(*buffer, head, (size_t)hlen);
+				memcpy(*buffer + hlen, pixels, (size_t)(w * h));
+				*len = w * h + hlen;
+				strcpy(content_type, "image/x-portable-pixmap");
+			}
+			else {
+				*len = 0;
+			}
+			free(pixels);
+		}
+		else {
+			*buffer = NULL;
+			*len = 0;
+		}
+	}
+	else {
+		*buffer = NULL;
+		*len = 0;
+	}
+	remote_debug_unlock();
+}
+
+/* ================================================================== */
+/* Playfield objects: switches, lamps, solenoids                      */
+/* ================================================================== */
+
+/* Read the on/off state of a switch/lamp/solenoid by number.
+ * The caller must hold the debugger lock. */
+static int object_state(int type, int id)
+{
+	if (!Machine)
+		return 0;
+	if (type == REMOTE_DEBUG_OBJ_SWITCH)
+		return core_getSw(id) ? 1 : 0;
+	if (type == REMOTE_DEBUG_OBJ_LAMP) {
+		/* Lamp number -> matrix position, the way vp_getLamp() in vpintf.c
+		   does it: the driver's conversion counts the first lamp column as
+		   column 1, which is lampMatrix[0]. Without a conversion the number
+		   is taken as column/row (11 = column 1, row 1). */
+		int idx = (coreData && coreData->lamp2m) ? coreData->lamp2m(id) - 8
+		                                         : (id / 10 - 1) * 8 + id % 10 - 1;
+		if (idx < 0 || idx >= CORE_MAXLAMPCOL * 8)
+			return 0;
+		return (coreGlobals.lampMatrix[idx / 8] >> (idx % 8)) & 1;
+	}
+	if (type == REMOTE_DEBUG_OBJ_SOL)
+		return core_getSol(id) ? 1 : 0;
+	return 0;
+}
+
+/* Standard WPC name for a switch number, or "" if none is known.
+ * Covers the coin-door column and the flipper column plus the game's
+ * dedicated start/tilt/slam/coin-door/shooter switches. */
+static const char *switch_name(int num)
+{
+	static const char *coindoor[8] = {
+		"Coin 1", "Coin 2", "Coin 3", "Coin 4",
+		/* same order as the port bits in WPC_COMPORTS (wpc.h) */
+		"Escape", "Down", "Up", "Enter"
+	};
+	static const char *flippers[8] = {
+		"L.R Flipper EOS", "L.R Flipper", "L.L Flipper EOS", "L.L Flipper",
+		"U.R Flipper EOS", "U.R Flipper", "U.L Flipper EOS", "U.L Flipper"
+	};
+	/* Column 0 is the coin door on WPC, and these names belong to that family
+	   alone. Other generations use the column for whatever the driver says it
+	   is - rfranco keeps its two operator door switches there - so labelling
+	   one of those "Coin 1" states something that is not true. Fall through to
+	   the empty name instead, which is what the rest of such a driver's
+	   switches already report. */
+	if (num >= 1 && num <= 8)
+		return (core_gameData && (core_gameData->gen & GEN_ALLWPC))
+		       ? coindoor[num - 1] : "";
+	if (num >= CORE_FLIPPERSWCOL * 10 + 1 && num <= CORE_FLIPPERSWCOL * 10 + 8)
+		return flippers[num - (CORE_FLIPPERSWCOL * 10 + 1)];
+	/* comSw is WPC game data as well; other generations keep different data
+	   in that union */
+	if (core_gameData && (core_gameData->gen & GEN_ALLWPC)) {
+		if (num == core_gameData->wpc.comSw.start)    return "Start";
+		if (num == core_gameData->wpc.comSw.tilt)     return "Tilt";
+		if (num == core_gameData->wpc.comSw.sTilt)    return "Slam Tilt";
+		if (num == core_gameData->wpc.comSw.coinDoor) return "Coin Door";
+		if (num == core_gameData->wpc.comSw.shooter)  return "Shooter";
+	}
+	return "";
+}
+
+/* Emit switches of one column as JSON objects; returns updated first flag. */
+static int emit_switch_col(strbuf_t *sb, int col, int first)
+{
+	int row;
+	for (row = 0; row < 8; row++) {
+		/* The switch number is whatever the driver calls this matrix position:
+		   column/row style (WPC: 11-88) or sequential (System 11 and the core
+		   default: 1-64, with the dedicated column 0 at -7..0). It is the
+		   number core_setSw() and so /api/input expect. */
+		int num = (coreData && coreData->m2sw) ? coreData->m2sw(col, row) : col * 10 + row + 1;
+		char esc[64];
+		sb_appendf(sb,
+			"%s{\"num\": %d, \"col\": %d, \"row\": %d, \"active\": %d, \"name\": \"%s\"}",
+			first ? "" : ",", num, col, row + 1,
+			((coreGlobals.swMatrix[col] ^ coreGlobals.invSw[col]) >> row) & 1,
+			remote_debug_json_escape(esc, (int)sizeof(esc), switch_name(num)));
+		first = 0;
+	}
+	return first;
+}
+
+void remote_debug_get_switches(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int first = 1, col, custom;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"switches\": [");
+	if (Machine) {
+		/* coin door (col 0), playfield matrix (col 1-8), flippers (col 11) */
+		first = emit_switch_col(&sb, 0, first);
+		for (col = 1; col <= 8; col++)
+			first = emit_switch_col(&sb, col, first);
+		first = emit_switch_col(&sb, CORE_FLIPPERSWCOL, first);
+		/* game-specific custom columns */
+		custom = core_gameData ? core_gameData->hw.swCol : 0;
+		for (col = 0; col < custom; col++)
+			first = emit_switch_col(&sb, CORE_CUSTSWCOL + col, first);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_lamps(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int first = 1, col, row, cols;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"lamps\": [");
+	if (Machine) {
+		cols = 8 + (core_gameData ? core_gameData->hw.lampCol : 0);
+		if (cols > CORE_MAXLAMPCOL)
+			cols = CORE_MAXLAMPCOL;
+		for (col = 0; col < cols; col++) {
+			for (row = 0; row < 8; row++) {
+				/* the number the driver gives this lamp: column/row style on
+				   WPC (11-88), sequential (1-64) on System 11 and others; col
+				   and row are reported 1-based, lampMatrix[0] is column 1 */
+				int num = (coreData && coreData->m2lamp) ? coreData->m2lamp(col + 1, row)
+				                                         : (col + 1) * 10 + row + 1;
+				sb_appendf(&sb,
+					"%s{\"num\": %d, \"col\": %d, \"row\": %d, \"active\": %d}",
+					first ? "" : ",", num, col + 1, row + 1,
+					(coreGlobals.lampMatrix[col] >> row) & 1);
+				first = 0;
+			}
+		}
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_solenoids(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int first = 1, n, count;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"solenoids\": [");
+	if (Machine) {
+		count = CORE_FIRSTCUSTSOL - 1 + (core_gameData ? core_gameData->hw.custSol : 0);
+		if (count < 1 || count > CORE_MAXSOL)
+			count = CORE_FIRSTCUSTSOL - 1;
+		for (n = 1; n <= count; n++) {
+			sb_appendf(&sb, "%s{\"num\": %d, \"active\": %d}",
+			           first ? "" : ",", n, core_getSol(n) ? 1 : 0);
+			first = 0;
+		}
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Timed switch pulses                                                */
+/* ================================================================== */
+
+/* Advance timed pulses. reassert!=0 also re-applies the held value (needed
+ * on the emulator thread because the coin-door column is overwritten by the
+ * input port every frame). Expired pulses restore their off value.
+ * The caller must hold the debugger lock. */
+static void pulse_tick(int reassert)
+{
+	UINT32 now = monotonic_ms();
+	int i;
+	if (!Machine)
+		return;
+	for (i = 0; i < pulse_count; ) {
+		/* signed diff handles UINT32 wraparound */
+		if ((INT32)(now - pulses[i].expiry) >= 0) {
+			core_setSw(pulses[i].sw, pulses[i].offval);
+			pulses[i] = pulses[pulse_count - 1];
+			pulse_count--;
+		}
+		else {
+			if (reassert)
+				core_setSw(pulses[i].sw, pulses[i].heldval);
+			i++;
+		}
+	}
+	/* release cabinet/operator buttons whose press time is over */
+	for (i = 0; i < button_pulse_count; ) {
+		if ((INT32)(now - button_pulses[i].expiry) >= 0) {
+			port_force[CORE_COREINPORT] &= ~button_pulses[i].mask;
+			input_port_set_force(CORE_COREINPORT, port_force[CORE_COREINPORT]);
+			button_pulses[i] = button_pulses[button_pulse_count - 1];
+			button_pulse_count--;
+		}
+		else
+			i++;
+	}
+}
+
+/* Expire pulses from the HTTP thread so they end even while paused (when
+ * no frames are produced and the emulator-side re-assert does not run). */
+static void service_pulses(void)
+{
+	if (pulse_count == 0 && button_pulse_count == 0)
+		return;
+	remote_debug_lock();
+	pulse_tick(0);
+	remote_debug_unlock();
+}
+
+int remote_debug_set_switch(int sw, int val, int pulse_ms)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (coreData) {
+		int on = val ? 1 : 0;
+		core_setSw(sw, on);
+		if (pulse_ms > 0 && pulse_count < PULSE_MAX) {
+			pulses[pulse_count].sw = sw;
+			pulses[pulse_count].heldval = on;
+			pulses[pulse_count].offval = on ? 0 : 1;
+			pulses[pulse_count].expiry = monotonic_ms() + (UINT32)pulse_ms;
+			pulse_count++;
+		}
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+/* Force bits high/low in input port `port`'s value, independent of the
+ * normal keyboard/joystick read (see /api/input/port and -holdport). This
+ * is the only way to present a dedicated-input button (e.g. ADVANCE) as
+ * already held, including from before MACHINE_INIT runs. Returns 0 on
+ * success, -1 if port is out of range. */
+int remote_debug_set_input_port_force(int port, int val)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (port >= 0 && port < MAX_INPUT_PORTS) {
+		port_force[port] = (unsigned short)val;
+		input_port_set_force(port, port_force[port]);
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+/* ================================================================== */
+/* NVRAM                                                              */
+/* ================================================================== */
+
+/* Called by core_nvram() on the emulator thread, when the NVRAM is loaded
+ * at start-up and again whenever it is saved or cleared - hence the check
+ * for blocks that are known already. */
+void remote_debug_nvram_register(void *mem, size_t length)
+{
+	int i;
+	/* the NVRAM is saved once more after remote_debug_exit(), when the lock
+	   is gone already */
+	if (!remote_debug_ready || !mem || length == 0)
+		return;
+	remote_debug_lock();
+	for (i = 0; i < nvram_block_count; i++) {
+		if (nvram_blocks[i].mem == (UINT8 *)mem)
+			break;
+	}
+	if (i < NVRAM_BLOCK_MAX) {
+		nvram_blocks[i].mem = (UINT8 *)mem;
+		nvram_blocks[i].length = length;
+		if (i == nvram_block_count)
+			nvram_block_count++;
+	}
+	remote_debug_unlock();
+}
+
+/* Find the CPU whose memory region contains `mem`; the offset into the
+ * region is the address then. Returns the CPU number, or -1 if the block
+ * is kept outside the CPU memory regions (a driver's own array).
+ * The caller must hold the debugger lock. */
+static int nvram_find_cpu(const UINT8 *mem, UINT32 *addr)
+{
+	int cpu;
+	for (cpu = 0; Machine && cpu < cpu_gettotalcpu(); cpu++) {
+		const UINT8 *base = memory_region(REGION_CPU1 + cpu);
+		size_t size = memory_region_length(REGION_CPU1 + cpu);
+		if (base && mem >= base && mem < base + size) {
+			*addr = (UINT32)(mem - base);
+			return cpu;
+		}
+	}
+	return -1;
+}
+
+void remote_debug_get_nvram_info(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 512);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"blocks\": [");
+	for (i = 0; i < nvram_block_count; i++) {
+		UINT32 addr = 0;
+		int cpu = nvram_find_cpu(nvram_blocks[i].mem, &addr);
+		sb_appendf(&sb, "%s{\"size\": %u, \"cpu\": %d, \"addr\": %d}",
+		           i ? "," : "", (unsigned)nvram_blocks[i].length, cpu,
+		           (cpu >= 0) ? (int)addr : -1);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_nvram_dump(char **buffer, int *len)
+{
+	size_t total = 0;
+	int i;
+	*buffer = NULL;
+	*len = 0;
+	remote_debug_lock();
+	for (i = 0; i < nvram_block_count; i++)
+		total += nvram_blocks[i].length;
+	if (Machine && total > 0) {
+		char *buf = malloc(total);
+		if (buf) {
+			size_t pos = 0;
+			for (i = 0; i < nvram_block_count; i++) {
+				memcpy(buf + pos, nvram_blocks[i].mem, nvram_blocks[i].length);
+				pos += nvram_blocks[i].length;
+			}
+			*buffer = buf;
+			*len = (int)total;
+		}
+	}
+	remote_debug_unlock();
+}
+
+/* ================================================================== */
+/* Cabinet / operator buttons                                         */
+/* ================================================================== */
+
+/* Every PinMAME driver declares its cabinet and operator buttons (coins,
+ * start, tilt, and the service buttons - Escape/Down/Up/Enter on WPC,
+ * Advance/Up-Down/diagnostics on System 11, the black/green buttons on Data
+ * East, ...) as named bits of input port CORE_COREINPORT, and its
+ * SWITCH_UPDATE routes them to wherever that hardware wants them. Listing
+ * those bits and pressing them through the forced-value overlay of the
+ * port therefore works for all generations without any knowledge of the
+ * individual driver, and takes the same path as the keyboard. */
+
+/* Nonzero if `in` describes a button (not a port header, DIP switch, ...). */
+static int is_button_bit(const struct InputPort *in)
+{
+	UINT32 type = in->type & ~IPF_MASK;
+	return in->mask != 0 && !(in->type & IPF_UNUSED)
+	       && type != IPT_DIPSWITCH_NAME && type != IPT_DIPSWITCH_SETTING
+	       && type != IPT_EXTENSION;
+}
+
+void remote_debug_get_buttons(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int first = 1;
+	sb_init(&sb, 2048);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"port\": %d, \"buttons\": [", CORE_COREINPORT);
+	if (Machine && Machine->input_ports) {
+		const struct InputPort *in = Machine->input_ports;
+		int port = -1, value = readinputport(CORE_COREINPORT);
+		for (; (in->type & ~IPF_MASK) != IPT_END; in++) {
+			const char *name;
+			char esc[64];
+			if ((in->type & ~IPF_MASK) == IPT_PORT) {
+				port++;
+				continue;
+			}
+			if (port != CORE_COREINPORT || !is_button_bit(in))
+				continue;
+			name = input_port_name(in);
+			if (!name || !name[0])
+				continue;
+			sb_appendf(&sb,
+				"%s{\"mask\": %d, \"name\": \"%s\", \"toggle\": %d, \"active\": %d}",
+				first ? "" : ",", in->mask,
+				remote_debug_json_escape(esc, (int)sizeof(esc), name),
+				(in->type & IPF_TOGGLE) ? 1 : 0, (value & in->mask) ? 1 : 0);
+			first = 0;
+		}
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+int remote_debug_set_button(int mask, int val, int pulse_ms)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (Machine && mask > 0 && mask <= 0xffff) {
+		if (val)
+			port_force[CORE_COREINPORT] |= (unsigned short)mask;
+		else
+			port_force[CORE_COREINPORT] &= ~(unsigned short)mask;
+		input_port_set_force(CORE_COREINPORT, port_force[CORE_COREINPORT]);
+		if (val && pulse_ms > 0 && button_pulse_count < PULSE_MAX) {
+			button_pulses[button_pulse_count].mask = (UINT16)mask;
+			button_pulses[button_pulse_count].expiry = monotonic_ms() + (UINT32)pulse_ms;
+			button_pulse_count++;
+		}
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+/* Write switch-matrix column `col` directly, bypassing core_setSw and its
+ * sw2m mapping (see /api/input/matrix). core_setSw maps every positive
+ * switch number to swMatrix[1] or later (core_swSeq2m: no+7), so dedicated
+ * columns such as col 0 -- the cabinet row holding TEST/ADVANCE/EG1/EG2 --
+ * are otherwise unreachable from the API. Returns 0 on success, -1 if the
+ * core is not ready or col is out of range. */
+int remote_debug_set_matrix_col(int col, int val)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (coreData && col >= 0 && col < CORE_MAXSWCOL) {
+		coreGlobals.swMatrix[col] = (UINT8)val;
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+/* Parse "-holdport PORT:HEXMASK[,PORT:HEXMASK...]" and force those input
+ * port bits high before the machine runs, so MACHINE_INIT sees them --
+ * this is how "hold ADVANCE while switching on" (the real machine's route
+ * into test mode) gets simulated, since the normal input path is not
+ * reachable that early. Called once from remote_debug_init(), which itself
+ * runs before run_machine() (see mame.c). */
+static void apply_holdport_option(void)
+{
+	char *copy, *tok;
+
+	if (!pmoptions.holdport || !pmoptions.holdport[0])
+		return;
+	copy = strdup(pmoptions.holdport);
+	if (!copy)
+		return;
+	for (tok = strtok(copy, ","); tok; tok = strtok(NULL, ",")) {
+		char *sep = strchr(tok, ':');
+		if (sep) {
+			int port = atoi(tok);
+			unsigned short mask = (unsigned short)strtoul(sep + 1, NULL, 16);
+			if (port >= 0 && port < MAX_INPUT_PORTS)
+				port_force[port] = mask;
+			input_port_set_force(port, mask);
+			printf("Remote Debugger: holding port %d bits %04X from power-on\n", port, mask);
+		}
+	}
+	free(copy);
+}
+
+/* ================================================================== */
+/* Object monitoring / action log                                     */
+/* ================================================================== */
+
+static const char *obj_type_name(int type)
+{
+	switch (type) {
+		case REMOTE_DEBUG_OBJ_SWITCH: return "switch";
+		case REMOTE_DEBUG_OBJ_LAMP:   return "lamp";
+		case REMOTE_DEBUG_OBJ_SOL:    return "sol";
+		default:                      return "?";
+	}
+}
+
+int remote_debug_monitor_add(int obj_type, int id, int brk)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (monitor_count < MONITOR_MAX) {
+		monitors[monitor_count].type = obj_type;
+		monitors[monitor_count].id = id;
+		monitors[monitor_count].last = object_state(obj_type, id);
+		monitors[monitor_count].brk = brk;
+		monitor_count++;
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+void remote_debug_monitor_clear(void)
+{
+	remote_debug_lock();
+	monitor_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_action_log_clear(void)
+{
+	remote_debug_lock();
+	action_head = 0;
+	action_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_monitor_sample(void)
+{
+	int i;
+	if (monitor_count == 0)
+		return;
+	remote_debug_lock();
+	for (i = 0; i < monitor_count; i++) {
+		int cur = object_state(monitors[i].type, monitors[i].id);
+		if (cur != monitors[i].last) {
+			action_t *a = &action_log[action_head];
+			a->type = monitors[i].type;
+			a->id = monitors[i].id;
+			a->val = cur;
+			a->time = monotonic_ms();
+			action_head = (action_head + 1) % ACTION_LOG_SIZE;
+			if (action_count < ACTION_LOG_SIZE)
+				action_count++;
+			monitors[i].last = cur;
+			publish_event("{\"event\": \"action\", \"type\": \"%s\", \"id\": %d, \"val\": %d}",
+			              obj_type_name(monitors[i].type), monitors[i].id, cur);
+			if (monitors[i].brk) {
+				is_paused = 1;
+				publish_event("{\"event\": \"halt\", \"reason\": \"monitor\", \"type\": \"%s\", \"id\": %d, \"val\": %d}",
+				              obj_type_name(monitors[i].type), monitors[i].id, cur);
+			}
+		}
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_monitors(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 2048);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"monitors\": [");
+	for (i = 0; i < monitor_count; i++)
+		sb_appendf(&sb, "%s{\"type\": \"%s\", \"id\": %d, \"state\": %d, \"break\": %d}",
+		           (i > 0) ? "," : "", obj_type_name(monitors[i].type),
+		           monitors[i].id, monitors[i].last, monitors[i].brk);
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+void remote_debug_get_action_log(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 8192);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"actions\": [");
+	for (i = 0; i < action_count; i++) {
+		int idx = (action_head - action_count + i + ACTION_LOG_SIZE) % ACTION_LOG_SIZE;
+		const action_t *a = &action_log[idx];
+		sb_appendf(&sb, "%s{\"type\": \"%s\", \"id\": %d, \"val\": %d, \"t\": %u}",
+		           (i > 0) ? "," : "", obj_type_name(a->type), a->id, a->val, a->time);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Code instrumentation (PC hit counting)                             */
+/* ================================================================== */
+
+int remote_debug_instrument_add(UINT32 addr, int bank, int cpu)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (instrument_count < INSTRUMENT_MAX) {
+		instruments[instrument_count].addr = addr;
+		instruments[instrument_count].bank = bank;
+		instruments[instrument_count].cpu = cpu;
+		instruments[instrument_count].count = 0;
+		instrument_count++;
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+void remote_debug_instrument_clear(void)
+{
+	remote_debug_lock();
+	instrument_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_get_instrumentation(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"points\": [");
+	for (i = 0; i < instrument_count; i++)
+		sb_appendf(&sb, "%s{\"addr\": %u, \"bank\": %d, \"cpu\": %d, \"count\": %u}",
+		           (i > 0) ? "," : "", instruments[i].addr,
+		           instruments[i].bank, instruments[i].cpu, instruments[i].count);
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Memory value scan                                                  */
+/* ================================================================== */
+
+int remote_debug_scan_new(int cpu, UINT32 addr, int size)
+{
+	int i;
+	if (size < 1 || size > SCAN_MAX)
+		return -1;
+	remote_debug_lock();
+	if (!Machine || cpu < 0 || cpu >= cpu_gettotalcpu()) {
+		remote_debug_unlock();
+		return -1;
+	}
+	scan_cpu = cpu;
+	scan_base = addr;
+	scan_size = size;
+	for (i = 0; i < size; i++) {
+		scan_snapshot[i] = remote_debug_read_byte(cpu, addr + (UINT32)i, -1);
+		scan_candidate[i] = 1;
+	}
+	remote_debug_unlock();
+	return size;
+}
+
+int remote_debug_scan_filter(int op, UINT8 val)
+{
+	int i, remaining = 0;
+	remote_debug_lock();
+	if (scan_size == 0 || !Machine) {
+		remote_debug_unlock();
+		return -1;
+	}
+	for (i = 0; i < scan_size; i++) {
+		UINT8 cur, old;
+		int keep;
+		if (!scan_candidate[i])
+			continue;
+		cur = remote_debug_read_byte(scan_cpu, scan_base + (UINT32)i, -1);
+		old = scan_snapshot[i];
+		switch (op) {
+			case REMOTE_DEBUG_SCAN_EQ:        keep = (cur == val); break;
+			case REMOTE_DEBUG_SCAN_NE:        keep = (cur != val); break;
+			case REMOTE_DEBUG_SCAN_CHANGED:   keep = (cur != old); break;
+			case REMOTE_DEBUG_SCAN_UNCHANGED: keep = (cur == old); break;
+			case REMOTE_DEBUG_SCAN_INC:       keep = (cur > old);  break;
+			case REMOTE_DEBUG_SCAN_DEC:       keep = (cur < old);  break;
+			default:                          keep = 1;            break;
+		}
+		scan_candidate[i] = (UINT8)keep;
+		scan_snapshot[i] = cur;
+		if (keep)
+			remaining++;
+	}
+	remote_debug_unlock();
+	return remaining;
+}
+
+void remote_debug_get_scan(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i, emitted = 0, total = 0;
+	sb_init(&sb, 8192);
+	remote_debug_lock();
+	for (i = 0; i < scan_size; i++)
+		if (scan_candidate[i])
+			total++;
+	sb_appendf(&sb, "{\"count\": %d, \"results\": [", total);
+	for (i = 0; i < scan_size && emitted < 256; i++) {
+		if (!scan_candidate[i])
+			continue;
+		sb_appendf(&sb, "%s{\"addr\": %u, \"val\": %u}",
+		           (emitted > 0) ? "," : "", scan_base + (UINT32)i,
+		           Machine ? (unsigned)remote_debug_read_byte(scan_cpu, scan_base + (UINT32)i, -1) : 0);
+		emitted++;
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Lightweight game-state checkpoints                                 */
+/* ================================================================== */
+
+/* What a checkpoint holds is the machine's RAM as far as the debugger can
+ * find it without knowing the driver: the plain RAM in the main CPU's
+ * memory map, plus the battery backed memory the driver reported through
+ * core_nvram() (which is how the RAM behind a write handler, like the write
+ * protected WPC RAM, or a CMOS array outside the CPU memory gets in). */
+typedef struct {
+	UINT8 *mem;
+	size_t length;
+	INT32  addr;          /* address in the main CPU's memory, -1 if not mapped */
+} ram_block_t;
+
+#define RAM_BLOCK_MAX 24
+
+/* Nonzero if [mem, mem+length) lies within one of the n blocks. */
+static int ram_block_covered(const ram_block_t *blk, int n, const UINT8 *mem, size_t length)
+{
+	int i;
+	for (i = 0; i < n; i++) {
+		if (mem >= blk[i].mem && mem + length <= blk[i].mem + blk[i].length)
+			return 1;
+	}
+	return 0;
+}
+
+/* Fill blk[] with the RAM blocks of the running machine; returns their
+ * number. The caller must hold the debugger lock. */
+static int ram_blocks_collect(ram_block_t *blk)
+{
+	int n = 0, i;
+	UINT8 *base = memory_region(REGION_CPU1);
+	size_t size = memory_region_length(REGION_CPU1);
+
+	if (base && cpunum_databus_width(0) == 8 && Machine->drv->cpu[0].memory_write) {
+		const struct Memory_WriteAddress *mwa = Machine->drv->cpu[0].memory_write;
+		for (; !IS_MEMPORT_END(mwa) && n < RAM_BLOCK_MAX; mwa++) {
+			size_t length;
+			if (IS_MEMPORT_MARKER(mwa) || mwa->handler != MWA_RAM
+					|| mwa->end < mwa->start || mwa->end >= size)
+				continue;
+			length = (size_t)(mwa->end - mwa->start) + 1;
+			if (ram_block_covered(blk, n, base + mwa->start, length))
+				continue;
+			blk[n].mem = base + mwa->start;
+			blk[n].length = length;
+			blk[n].addr = (INT32)mwa->start;
+			n++;
+		}
+	}
+	for (i = 0; i < nvram_block_count && n < RAM_BLOCK_MAX; i++) {
+		UINT32 addr = 0;
+		if (ram_block_covered(blk, n, nvram_blocks[i].mem, nvram_blocks[i].length))
+			continue;
+		blk[n].mem = nvram_blocks[i].mem;
+		blk[n].length = nvram_blocks[i].length;
+		blk[n].addr = (nvram_find_cpu(nvram_blocks[i].mem, &addr) == 0) ? (INT32)addr : -1;
+		n++;
+	}
+	return n;
+}
+
+static size_t ram_blocks_size(const ram_block_t *blk, int n)
+{
+	size_t total = 0;
+	int i;
+	for (i = 0; i < n; i++)
+		total += blk[i].length;
+	return total;
+}
+
+/* Copy all blocks into buf (save != 0) or buf back into the blocks. */
+static void ram_blocks_copy(const ram_block_t *blk, int n, UINT8 *buf, int save)
+{
+	size_t pos = 0;
+	int i;
+	for (i = 0; i < n; i++) {
+		if (save)
+			memcpy(buf + pos, blk[i].mem, blk[i].length);
+		else
+			memcpy(blk[i].mem, buf + pos, blk[i].length);
+		pos += blk[i].length;
+	}
+}
+
+/* Find an existing slot by name, or -1. Caller holds the lock. */
+static int savestate_find(const char *name)
+{
+	int i;
+	for (i = 0; i < SAVESTATE_SLOTS; i++)
+		if (savestates[i].used && strcmp(savestates[i].name, name) == 0)
+			return i;
+	return -1;
+}
+
+static void savestate_free_all(void)
+{
+	int i;
+	for (i = 0; i < SAVESTATE_SLOTS; i++)
+		free(savestates[i].ram);
+	memset(savestates, 0, sizeof(savestates));
+}
+
+int remote_debug_savestate_save(const char *slot)
+{
+	ram_block_t blk[RAM_BLOCK_MAX];
+	const regmap_t *regs;
+	int idx, i, n;
+	size_t total;
+	UINT8 *ram;
+	savestate_t *s;
+	if (!slot || !slot[0])
+		return -1;
+	remote_debug_lock();
+	if (!Machine || cpu_gettotalcpu() < 1) {
+		remote_debug_unlock();
+		return -1;
+	}
+	n = ram_blocks_collect(blk);
+	total = ram_blocks_size(blk, n);
+	idx = savestate_find(slot);
+	if (idx < 0) {
+		for (i = 0; i < SAVESTATE_SLOTS; i++)
+			if (!savestates[i].used) { idx = i; break; }
+	}
+	ram = (idx >= 0 && total > 0) ? malloc(total) : NULL;
+	if (!ram) {
+		remote_debug_unlock();
+		return -1;   /* all slots occupied, no RAM found or out of memory */
+	}
+	s = &savestates[idx];
+	free(s->ram);
+	memset(s, 0, sizeof(*s));
+	strncpy(s->name, slot, sizeof(s->name) - 1);
+	s->used = 1;
+	s->ram = ram;
+	s->ramlen = total;
+	ram_blocks_copy(blk, n, s->ram, 1);
+	cpuintrf_push_context(0);
+	regs = active_regmap();
+	s->pc = activecpu_get_reg(REG_PC);
+	s->s  = activecpu_get_reg(REG_SP);
+	s->u  = ACTIVE_REG(regs, u);
+	s->x  = ACTIVE_REG(regs, x);
+	s->y  = ACTIVE_REG(regs, y);
+	s->a  = (UINT8)ACTIVE_REG(regs, a);
+	s->b  = (UINT8)ACTIVE_REG(regs, b);
+	s->dp = (UINT8)ACTIVE_REG(regs, dp);
+	s->cc = (UINT8)ACTIVE_REG(regs, cc);
+	cpuintrf_pop_context();
+	remote_debug_unlock();
+	{
+		char b[MSG_LEN];
+		snprintf(b, sizeof(b), "State saved to slot '%s' (%u bytes of RAM)", slot, (unsigned)total);
+		remote_debug_add_message(b);
+	}
+	return 0;
+}
+
+/* Set a register of the active CPU if it has that register. */
+#define ACTIVE_REG_SET(map, reg, val) \
+	do { if ((map)->reg != NO_REG) activecpu_set_reg((map)->reg, (val)); } while (0)
+
+int remote_debug_savestate_load(const char *slot)
+{
+	ram_block_t blk[RAM_BLOCK_MAX];
+	const regmap_t *regs;
+	int idx, n;
+	const savestate_t *s;
+	if (!slot || !slot[0])
+		return -1;
+	remote_debug_lock();
+	if (!Machine || cpu_gettotalcpu() < 1) {
+		remote_debug_unlock();
+		return -1;
+	}
+	idx = savestate_find(slot);
+	n = ram_blocks_collect(blk);
+	/* the blocks are the same as when the slot was saved; the size check is
+	   only there to never write beyond what was saved */
+	if (idx < 0 || savestates[idx].ramlen != ram_blocks_size(blk, n)) {
+		remote_debug_unlock();
+		return -1;
+	}
+	s = &savestates[idx];
+	ram_blocks_copy(blk, n, s->ram, 0);
+	cpuintrf_push_context(0);
+	regs = active_regmap();
+	activecpu_set_reg(REG_PC, s->pc);
+	activecpu_set_reg(REG_SP, s->s);
+	ACTIVE_REG_SET(regs, u, s->u);
+	ACTIVE_REG_SET(regs, x, s->x);
+	ACTIVE_REG_SET(regs, y, s->y);
+	ACTIVE_REG_SET(regs, a, s->a);
+	ACTIVE_REG_SET(regs, b, s->b);
+	ACTIVE_REG_SET(regs, dp, s->dp);
+	ACTIVE_REG_SET(regs, cc, s->cc);
+	cpuintrf_pop_context();
+	/* the frames on the callstack belong to the execution that was left */
+	callstack_ptr = 0;
+	remote_debug_unlock();
+	{
+		char b[MSG_LEN];
+		snprintf(b, sizeof(b), "State loaded from slot '%s'", slot);
+		remote_debug_add_message(b);
+	}
+	return 0;
+}
+
+void remote_debug_savestate_delete(const char *slot)
+{
+	int idx;
+	remote_debug_lock();
+	idx = savestate_find(slot);
+	if (idx >= 0) {
+		free(savestates[idx].ram);
+		memset(&savestates[idx], 0, sizeof(savestates[idx]));
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_savestates(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i, first = 1;
+	sb_init(&sb, 1024);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"slots\": [");
+	for (i = 0; i < SAVESTATE_SLOTS; i++) {
+		if (savestates[i].used) {
+			char esc[64];
+			sb_appendf(&sb, "%s{\"name\": \"%s\", \"pc\": %u}", first ? "" : ",",
+			           remote_debug_json_escape(esc, (int)sizeof(esc), savestates[i].name),
+			           savestates[i].pc);
+			first = 0;
+		}
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* DMD frame recorder                                                 */
+/* ================================================================== */
+
+void remote_debug_dmdrec_start(void)
+{
+	remote_debug_lock();
+	if (!dmd_rec)
+		dmd_rec = malloc(sizeof(dmd_frame_t) * DMD_REC_FRAMES);
+	if (dmd_rec)
+		dmd_recording = 1;
+	remote_debug_unlock();
+}
+
+void remote_debug_dmdrec_stop(void)
+{
+	dmd_recording = 0;
+}
+
+void remote_debug_dmdrec_clear(void)
+{
+	remote_debug_lock();
+	dmd_rec_head = 0;
+	dmd_rec_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_dmdrec_sample(void)
+{
+	float *px;
+	int w, h, n, i;
+	if (!dmd_recording || !dmd_rec)
+		return;
+	remote_debug_lock();
+	core_get_dmd_data(0, &px, &w, &h);
+	n = w * h;
+	if (px && n > 0 && n <= DMD_REC_PIX) {
+		dmd_frame_t *f = &dmd_rec[dmd_rec_head];
+		dmd_rec_w = w;
+		dmd_rec_h = h;
+		for (i = 0; i < n; i++) {
+			float v = px[i];
+			if (v < 0.0f) v = 0.0f;
+			if (v > 1.0f) v = 1.0f;
+			f->pix[i] = (UINT8)(v * 255.0f);
+		}
+		f->t = monotonic_ms();
+		dmd_rec_head = (dmd_rec_head + 1) % DMD_REC_FRAMES;
+		if (dmd_rec_count < DMD_REC_FRAMES)
+			dmd_rec_count++;
+	}
+	remote_debug_unlock();
+}
+
+void remote_debug_get_dmdrec_info(char **buffer, int *len)
+{
+	char res[192];
+	remote_debug_lock();
+	*len = snprintf(res, sizeof(res),
+		"{\"recording\": %d, \"count\": %d, \"width\": %d, \"height\": %d, \"capacity\": %d}",
+		(int)dmd_recording, dmd_rec_count, dmd_rec_w, dmd_rec_h, DMD_REC_FRAMES);
+	remote_debug_unlock();
+	*buffer = strdup(res);
+	if (!*buffer)
+		*len = 0;
+}
+
+/* Append a little-endian UINT32 to a byte buffer. */
+static void put_u32le(UINT8 *p, UINT32 v)
+{
+	p[0] = (UINT8)(v & 0xFF);
+	p[1] = (UINT8)((v >> 8) & 0xFF);
+	p[2] = (UINT8)((v >> 16) & 0xFF);
+	p[3] = (UINT8)((v >> 24) & 0xFF);
+}
+
+void remote_debug_get_dmdrec_data(char **buffer, int *len)
+{
+	int frame_bytes, total, i;
+	UINT8 *out, *p;
+	remote_debug_lock();
+	frame_bytes = dmd_rec_w * dmd_rec_h;
+	if (!dmd_rec || dmd_rec_count == 0 || frame_bytes <= 0) {
+		remote_debug_unlock();
+		*buffer = NULL;
+		*len = 0;
+		return;
+	}
+	/* header: count,w,h (12 bytes) + per frame: t (4) + pixels */
+	total = 12 + dmd_rec_count * (4 + frame_bytes);
+	out = malloc((size_t)total);
+	if (!out) {
+		remote_debug_unlock();
+		*buffer = NULL;
+		*len = 0;
+		return;
+	}
+	p = out;
+	put_u32le(p, (UINT32)dmd_rec_count); p += 4;
+	put_u32le(p, (UINT32)dmd_rec_w);     p += 4;
+	put_u32le(p, (UINT32)dmd_rec_h);     p += 4;
+	for (i = 0; i < dmd_rec_count; i++) {
+		int idx = (dmd_rec_head - dmd_rec_count + i + DMD_REC_FRAMES) % DMD_REC_FRAMES;
+		const dmd_frame_t *f = &dmd_rec[idx];
+		put_u32le(p, f->t); p += 4;
+		memcpy(p, f->pix, (size_t)frame_bytes);
+		p += frame_bytes;
+	}
+	remote_debug_unlock();
+	*buffer = (char *)out;
+	*len = total;
+}
+
+/* ================================================================== */
+/* Execution trace                                                    */
+/* ================================================================== */
+
+void remote_debug_exectrace_start(void)  { exec_trace_enabled = 1; }
+void remote_debug_exectrace_stop(void)   { exec_trace_enabled = 0; }
+
+void remote_debug_exectrace_clear(void)
+{
+	remote_debug_lock();
+	exec_trace_head = 0;
+	exec_trace_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_get_exectrace(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 65536);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"enabled\": %d, \"count\": %d, \"capacity\": %d, \"trace\": [",
+	           (int)exec_trace_enabled, exec_trace_count, EXEC_TRACE_SIZE);
+	for (i = 0; i < exec_trace_count; i++) {
+		int idx = (exec_trace_head - exec_trace_count + i + EXEC_TRACE_SIZE) % EXEC_TRACE_SIZE;
+		const exec_trace_t *e = &exec_trace[idx];
+		sb_appendf(&sb, "%s{\"pc\": %u, \"bank\": %d, \"a\": %u, \"b\": %u, \"x\": %u}",
+		           (i > 0) ? "," : "", e->pc, e->bank, e->a, e->b, e->x);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Coverage map                                                       */
+/* ================================================================== */
+
+void remote_debug_coverage_start(void)
+{
+	remote_debug_lock();
+	if (!coverage_bitmap) {
+		UINT32 nbanks = 0;
+		if (wpc_ram) {
+			int romlen = memory_region_length(WPC_ROMREGION);
+			if (romlen > 0)
+				nbanks = (UINT32)romlen / 0x4000;
+		}
+		coverage_bits = 0x10000 + nbanks * 0x4000;
+		coverage_bitmap = calloc((coverage_bits + 7) / 8, 1);
+		if (!coverage_bitmap)
+			coverage_bits = 0;
+		coverage_count = 0;
+	}
+	if (coverage_bitmap)
+		coverage_enabled = 1;
+	remote_debug_unlock();
+}
+
+void remote_debug_coverage_stop(void) { coverage_enabled = 0; }
+
+void remote_debug_coverage_clear(void)
+{
+	remote_debug_lock();
+	if (coverage_bitmap)
+		memset(coverage_bitmap, 0, (coverage_bits + 7) / 8);
+	coverage_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_get_coverage_info(char **buffer, int *len)
+{
+	char res[192];
+	remote_debug_lock();
+	*len = snprintf(res, sizeof(res),
+		"{\"enabled\": %d, \"executed\": %u, \"addressable\": %u}",
+		(int)coverage_enabled, coverage_count, coverage_bits);
+	remote_debug_unlock();
+	*buffer = strdup(res);
+	if (!*buffer)
+		*len = 0;
+}
+
+/* Per-address executed flags for a window (like a memory read of 0/1). */
+void remote_debug_get_coverage_region(char **buffer, int *len, UINT32 addr, int size, int bank)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, (size_t)size * 2 + 256);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"addr\": %u, \"bank\": %d, \"executed\": [", addr, bank);
+	for (i = 0; i < size; i++) {
+		int hit = 0;
+		if (coverage_bitmap) {
+			UINT32 idx = coverage_index(addr + (UINT32)i, bank);
+			if (idx < coverage_bits)
+				hit = (coverage_bitmap[idx >> 3] >> (idx & 7)) & 1;
+		}
+		sb_appendf(&sb, "%s%d", (i > 0) ? "," : "", hit);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Tracepoints (log-and-continue)                                     */
+/* ================================================================== */
+
+int remote_debug_tracepoint_add(UINT32 addr, int bank, int cpu)
+{
+	int result = -1;
+	remote_debug_lock();
+	if (tracepoint_count < MAX_POINTS) {
+		tracepoints[tracepoint_count].addr = addr;
+		tracepoints[tracepoint_count].bank = bank;
+		tracepoints[tracepoint_count].cpu = cpu;
+		tracepoints[tracepoint_count].hits = 0;
+		tracepoint_count++;
+		result = 0;
+	}
+	remote_debug_unlock();
+	return result;
+}
+
+void remote_debug_tracepoint_clear(void)
+{
+	remote_debug_lock();
+	tracepoint_count = 0;
+	tp_head = 0;
+	tp_count = 0;
+	remote_debug_unlock();
+}
+
+void remote_debug_get_tracepoints(char **buffer, int *len)
+{
+	strbuf_t sb;
+	int i;
+	sb_init(&sb, 4096);
+	remote_debug_lock();
+	sb_appendf(&sb, "{\"points\": [");
+	for (i = 0; i < tracepoint_count; i++)
+		sb_appendf(&sb, "%s{\"addr\": %u, \"bank\": %d, \"cpu\": %d, \"hits\": %u}",
+		           (i > 0) ? "," : "", tracepoints[i].addr,
+		           tracepoints[i].bank, tracepoints[i].cpu, tracepoints[i].hits);
+	sb_appendf(&sb, "], \"log\": [");
+	for (i = 0; i < tp_count; i++) {
+		int idx = (tp_head - tp_count + i + TP_LOG_SIZE) % TP_LOG_SIZE;
+		const tp_log_t *t = &tp_log[idx];
+		sb_appendf(&sb,
+			"%s{\"pc\": %u, \"bank\": %d, \"a\": %u, \"b\": %u, \"x\": %u, "
+			"\"y\": %u, \"u\": %u, \"s\": %u, \"dp\": %u, \"cc\": %u}",
+			(i > 0) ? "," : "", t->pc, t->bank, t->a, t->b, t->x,
+			t->y, t->u, t->s, t->dp, t->cc);
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+/* ================================================================== */
+/* Save-state diff                                                    */
+/* ================================================================== */
+
+/* Diff the RAM of two save slots (or slot 'a' against the live RAM when
+ * 'b' is NULL/empty). Returns the differing bytes as JSON: the address in
+ * the main CPU's memory (-1 for RAM that is not mapped there), and the RAM
+ * block with the offset into it. */
+void remote_debug_savestate_diff(char **buffer, int *len, const char *a, const char *b)
+{
+	strbuf_t sb;
+	ram_block_t blk[RAM_BLOCK_MAX];
+	int ia, ib, n = 0, k, first = 1, count = 0, emitted = 0;
+	size_t total = 0, i, pos;
+	const UINT8 *ba = NULL, *bb = NULL;
+	UINT8 *live = NULL;
+
+	sb_init(&sb, 8192);
+	remote_debug_lock();
+	if (Machine && cpu_gettotalcpu() > 0) {
+		n = ram_blocks_collect(blk);
+		total = ram_blocks_size(blk, n);
+	}
+	ia = savestate_find(a);
+	if (ia >= 0 && savestates[ia].ramlen == total)
+		ba = savestates[ia].ram;
+	if (b && b[0]) {
+		ib = savestate_find(b);
+		if (ib >= 0 && savestates[ib].ramlen == total)
+			bb = savestates[ib].ram;
+	}
+	else if (total > 0 && (live = malloc(total)) != NULL) {
+		ram_blocks_copy(blk, n, live, 1);
+		bb = live;
+	}
+	if (ba && bb) {
+		for (i = 0; i < total; i++)
+			if (ba[i] != bb[i])
+				count++;
+	}
+	sb_appendf(&sb, "{\"a\": \"%s\", \"b\": \"%s\", \"count\": %d, \"diffs\": [",
+	           ba ? a : "", (b && b[0]) ? b : "(live)", ba && bb ? count : -1);
+	if (ba && bb) {
+		for (k = 0, pos = 0; k < n; pos += blk[k].length, k++) {
+			for (i = 0; i < blk[k].length && emitted < 1024; i++) {
+				if (ba[pos + i] != bb[pos + i]) {
+					sb_appendf(&sb, "%s{\"addr\": %d, \"a\": %u, \"b\": %u, \"block\": %d, \"offset\": %u}",
+					           first ? "" : ",",
+					           (blk[k].addr >= 0) ? (int)(blk[k].addr + (INT32)i) : -1,
+					           ba[pos + i], bb[pos + i], k, (unsigned)i);
+					first = 0;
+					emitted++;
+				}
+			}
+		}
+	}
+	sb_appendf(&sb, "]}");
+	remote_debug_unlock();
+	free(live);
+	*buffer = sb.buf;
+	*len = sb.len;
+}
+
+#endif /* REMOTE_DEBUG */

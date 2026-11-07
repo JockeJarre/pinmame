@@ -8,6 +8,7 @@
 
 #include <math.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include "driver.h"
 #include "timer.h"
@@ -15,6 +16,10 @@
 #include "video.h"
 #include "mamedbg.h"
 #include "hiscore.h"
+
+#ifdef REMOTE_DEBUG
+#include "remote_debug/remote_debug.h"
+#endif
 
 #if (HAS_M68000 || HAS_M68010 || HAS_M68020 || HAS_M68EC020)
 #include "cpu/m68000/m68000.h"
@@ -209,6 +214,13 @@ static double perfect_interleave;
 
 // PinMame: time fence global offset
 volatile double time_fence_global_offset = 0.0;
+void (*cpu_publish_outputs)(int force) = NULL;
+
+// PinMAME: while nonzero, the external time fence is IGNORED. Set by the OSD for the duration of the FastFrames measurement window
+// (unthrottled startup frames, see the OSD's render_frame/update_timing), so raw emulation speed can be measured even while a host (VPX) drives fences.
+// Once the window ends and this drops back to 0, the fence's existing realign/catch-up logic below
+// recovers on its own (ahead >= 1s: offset realign; less: bounded stall until the host's clock catches up)
+int time_fence_bypass = 0;
 
 
 /*************************************
@@ -409,33 +421,59 @@ void cpu_run(void)
 	while (!time_to_quit)
 	{
 		/* prepare everything to run */
+#ifdef REMOTE_DEBUG
+		/* the HTTP thread must not read CPU state while it is (re)initialised */
+		remote_debug_lock();
+#endif
 		cpu_pre_run();
+#ifdef REMOTE_DEBUG
+		remote_debug_unlock();
+#endif
 
 		/* loop until the user quits or resets */
 		time_to_reset = 0;
+#ifdef REMOTE_DEBUG
+		remote_debug_reset_done();
+#endif
 		time_fence_global_offset = -options.time_fence;
 		while (!time_to_quit && !time_to_reset)
 		{
 			profiler_mark(PROFILER_EXTRA);
 
+#ifdef REMOTE_DEBUG
+			/* Tiny gap to allow HTTP thread to grab the lock */
+			usleep(1); 
+#endif
 			/* if we have a load/save scheduled, handle it */
 			if (loadsave_schedule != LOADSAVE_NONE)
 				handle_loadsave();
 			
 			/* execute CPUs */
+#ifdef REMOTE_DEBUG
+			remote_debug_lock();
+#endif
 			cpu_timeslice();
 
-#if defined(LIBPINMAME)
-         extern int libpinmame_time_to_quit(void);
-         if (libpinmame_time_to_quit())
-            time_to_quit = 1;
+#ifdef REMOTE_DEBUG
+			remote_debug_unlock();
 #endif
 
+#if defined(LIBPINMAME)
+			extern int libpinmame_time_to_quit(void);
+			if (libpinmame_time_to_quit())
+				time_to_quit = 1;
+#endif
 			profiler_mark(PROFILER_END);
 		}
 
 		/* finish up this iteration */
+#ifdef REMOTE_DEBUG
+		remote_debug_lock();
+#endif
 		cpu_post_run();
+#ifdef REMOTE_DEBUG
+		remote_debug_unlock();
+#endif
 	}
 
 #ifdef MAME_DEBUG
@@ -971,6 +1009,34 @@ void time_fence_exit()
 
 static void cpu_timeslice(void)
 {
+#ifdef REMOTE_DEBUG
+	if (remote_debug_should_quit()) {
+		time_to_quit = 1;
+		return;
+	}
+	if (remote_debug_is_paused())
+	{
+		/* Yield while paused to allow HTTP thread to work */
+		remote_debug_unlock();
+		/* a reset requested by the remote debugger is carried out even while
+		   paused: leave without running a timeslice, so that the machine is
+		   reset and then halts again on its first instruction */
+		while (remote_debug_is_paused() && !remote_debug_should_quit() && !time_to_reset) {
+			usleep(10000);
+		}
+		remote_debug_lock();
+		if (remote_debug_should_quit()) {
+			time_to_quit = 1;
+			return;
+		}
+		if (time_to_reset)
+			return;
+	}
+#endif
+	// keep the PWM/physical outputs the clients read up to date (rate limited)
+	if (cpu_publish_outputs)
+		cpu_publish_outputs(0);
+
 #if defined(VPINMAME)
 	// Continuously pump message loop, otherwise it creates stutters between COM server and client (VPinMAME locks VPX scripts until message are processed)
 	// It also causes a deadlock if using a TimeFence since messages are normally processed by a CPU callback that may not happen depending on the TimeFence.
@@ -980,11 +1046,21 @@ static void cpu_timeslice(void)
 
 	// PinMAME: allow external synchronization by suspending emulation when a time fence is reached
 	// NOTE: if debugging stutter issues or the like, disable this mechanism in the core scripts, or directly here
-	if (options.time_fence != 0.0 && time_fence_is_supported())
+	// (time_fence_bypass: the FastFrames measurement window runs fence-free, see its definition above)
+	if (options.time_fence != 0.0 && !time_fence_bypass && time_fence_is_supported())
 	{
 		const double now = timer_get_time();
 		if (now - options.time_fence - time_fence_global_offset >= 0.)
 		{
+#if defined(LIBPINMAME)
+			// Apply host writes here, before parking: the host thread that queued them is the one
+			// that advances the fence, so it cannot do that until they are applied.
+			extern void libpinmame_drain_pending_writes(void);
+			libpinmame_drain_pending_writes();
+#endif
+			// client sees the outputs as they are when the emulation stops here
+			if (cpu_publish_outputs)
+				cpu_publish_outputs(1);
 			if (now - options.time_fence - time_fence_global_offset >= 1.0)
 			{
 				// We are ahead by a large amount: realign external clock
@@ -1753,6 +1829,8 @@ static void cpu_firstvblankcallback(int param)
 
 static void cpu_synccallback(int param)
 {
+	if (cpu_publish_outputs) // client sees the outputs as they are while the throttle waits
+		cpu_publish_outputs(1);
 	throttle_speed_part(LOW_LATENCY_THROTTLE_PARTS-sync_countdown, LOW_LATENCY_THROTTLE_PARTS);
 	if(!--sync_countdown)
 		timer_adjust(sync_timer, TIME_NEVER, 0, TIME_NEVER);
@@ -1803,6 +1881,10 @@ static void cpu_vblankcallback(int param)
 	/* is it a real VBLANK? */
 	if (!--vblank_countdown)
 	{
+		/* once per frame, before the screen update and its throttle: client sees the outputs as they are while it waits */
+		if (cpu_publish_outputs)
+			cpu_publish_outputs(1);
+
 		/* do we update the screen now? */
 		if (!(Machine->drv->video_attributes & VIDEO_UPDATE_AFTER_VBLANK))
 			time_to_quit = updatescreen();

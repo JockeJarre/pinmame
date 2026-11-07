@@ -115,9 +115,13 @@
 #include "vidhrdw/generic.h"
 #include "palette.h"
 #include "harddisk.h"
+#include "denormals.h"
 #if defined(PINMAME) && defined(PROC_SUPPORT)
 #include "p-roc/p-roc.h"
 #endif /* PINMAME && PROC_SUPPORT */
+#ifdef REMOTE_DEBUG
+#include "remote_debug/remote_debug.h"
+#endif
 #if defined(PINMAME) && defined(LISY_SUPPORT)
  #include "lisy/utils.h"
 #endif /* PINMAME && LISY_SUPPORT */
@@ -128,6 +132,9 @@
 
 #ifdef LIBPINMAME
 extern void libpinmame_log_error(const char* format, ...);
+#endif
+#ifdef PINMAME
+extern mame_file *core_swlog_fopen(const char *name, const char *ext, int write);
 #endif
 
 /***************************************************************************
@@ -286,6 +293,9 @@ int run_game(int game)
 {
 	int err = 1;
 
+	/* set FLZ/DAZ on this thread, so the sound cores' various different IIR filters settle at 0 instead of parking in the denormal range once a machine goes quiet - see denormals.h */
+	set_denormals_flush_to_zero();
+
 	begin_resource_tracking();
 
 #ifdef MAME_DEBUG
@@ -330,6 +340,9 @@ int run_game(int game)
 			bail_and_print("Unable to initialize machine emulation");
 		else
 		{
+#ifdef REMOTE_DEBUG
+			remote_debug_init();
+#endif
 			/* then run it */
 			if (run_machine())
 				bail_and_print("Unable to start machine emulation");
@@ -435,6 +448,12 @@ static int init_machine(void)
 	/* load input ports settings (keys, dip switches, and so on) */
 	settingsloaded = load_input_port_settings();
 
+#ifdef PINMAME
+	/* -dip overrides, on top of both the driver default and the saved cfg */
+	if (dip_override_apply())
+		goto cant_apply_dips;
+#endif /* PINMAME */
+
 	/* multi-session safety - set spriteram size to zero before memory map is set up */
 	spriteram_size = spriteram_2_size = 0;
 
@@ -461,6 +480,9 @@ static int init_machine(void)
 
 	return 0;
 
+#ifdef PINMAME
+cant_apply_dips:
+#endif /* PINMAME */
 cant_init_memory:
 cant_load_roms:
 	input_port_free(Machine->input_ports_default);
@@ -515,7 +537,7 @@ static int run_machine(void)
 
 						/* invalidate contents to avoid subtle bugs */
 						for (i = 0; i < memory_region_length(region); i++)
-							memory_region(region)[i] = rand();
+							memory_region(region)[i] = (rand() >> 7) & 0xff;
 						free(Machine->memory_region[region].base);
 						Machine->memory_region[region].base = 0;
 					}
@@ -549,6 +571,8 @@ static int run_machine(void)
 
 void run_machine_core(void)
 {
+	int keep_nvram = 0;
+
 	/* disable artwork for the start */
 	artwork_enable(0);
 
@@ -579,17 +603,41 @@ void run_machine_core(void)
 				/* load the NVRAM now */
 				if (Machine->drv->nvram_handler)
 				{
-					mame_file *nvram_file = mame_fopen(Machine->gamedrv->name, 0, FILETYPE_NVRAM, 0);
+					mame_file *nvram_file;
+#ifdef PINMAME
+					/* a playback with a switch log starts from the NVRAM saved with it, and leaves the game's own alone */
+					mame_file *swlog_file = options.playback_name ? core_swlog_fopen(options.playback_name, "sw", 0) : NULL;
+					if (swlog_file)
+					{
+						mame_fclose(swlog_file);
+						keep_nvram = 1;
+						nvram_file = core_swlog_fopen(options.playback_name, "nv", 0);
+					}
+					else
+#endif
+					nvram_file = mame_fopen(Machine->gamedrv->name, 0, FILETYPE_NVRAM, 0);
 					(*Machine->drv->nvram_handler)(nvram_file, 0);
 					if (nvram_file)
 						mame_fclose(nvram_file);
+#ifdef PINMAME
+					/* a recording keeps the NVRAM it starts from */
+					if (options.record_name && !options.playback_name && (nvram_file = core_swlog_fopen(options.record_name, "nv", 1)) != NULL)
+					{
+						(*Machine->drv->nvram_handler)(nvram_file, 1);
+						mame_fclose(nvram_file);
+					}
+#endif
 				}
 
 				/* run the emulation! */
 				cpu_run();
 
+#ifdef REMOTE_DEBUG
+				remote_debug_exit();
+#endif
+
 				/* save the NVRAM */
-				if (Machine->drv->nvram_handler)
+				if (Machine->drv->nvram_handler && !keep_nvram)
 				{
 					mame_file *nvram_file = mame_fopen(Machine->gamedrv->name, 0, FILETYPE_NVRAM, 1);
 					if (nvram_file != NULL)
@@ -629,6 +677,9 @@ static void shutdown_machine(void)
 	/* free the memory allocated for various regions */
 	for (i = 0; i < MAX_MEMORY_REGIONS; i++)
 		free_memory_region(i);
+
+	/* close the files of mapped ROM regions */
+	close_mapped_roms();
 
 	/* close all hard drives */
 	hard_disk_close_all();
@@ -1156,6 +1207,9 @@ void draw_screen(void)
 
 void update_video_and_audio(void)
 {
+#ifdef REMOTE_DEBUG
+	if (remote_debug_should_quit()) return;
+#endif
 	int skipped_it = osd_skip_this_frame();
 
 #ifdef MAME_DEBUG
@@ -1254,6 +1308,10 @@ static void recompute_fps(int skipped_it)
 
 int updatescreen(void)
 {
+#ifdef REMOTE_DEBUG
+	if (remote_debug_should_quit())
+		return 1;
+#endif
 	/* update sound */
 	sound_update();
 

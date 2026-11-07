@@ -9,6 +9,7 @@ static struct {
   UINT8  lastLampMatrix[CORE_MAXLAMPCOL];
   int    lastGI[CORE_MAXGI];
   UINT64 lastSol;
+  UINT32 lastSolHigh; // solenoids 65 and up, see core_getAllSolHigh
   UINT32 solMask[2];
   UINT8  dips[VP_MAXDIPBANKS];
   UINT16 lastSeg[CORE_SEGCOUNT];
@@ -30,8 +31,14 @@ void vp_init(void) {
 /*------------------------------------
 /  get status of a lamp (0=off, 1=on)
 /-------------------------------------*/
-int vp_getLamp(int lampNo) {
+int vp_getLampIndex(int lampNo) {
   if (coreData && coreData->lamp2m) lampNo = coreData->lamp2m(lampNo) - 8;
+  return lampNo >= 0 && lampNo < CORE_MODOUT_LAMP_MAX ? lampNo : -1;
+}
+
+int vp_getLamp(int lampNo) {
+  lampNo = vp_getLampIndex(lampNo);
+  if (lampNo < 0) return 0;
   /*-- Physical output mode: return a physically meaningful value depending on the output type --*/
   if (coreGlobals.nLamps && (options.usemodsol & CORE_MODOUT_ENABLE_PHYSOUT_LAMPS))
     return (int)saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_LAMP0 + lampNo].value);
@@ -54,8 +61,8 @@ int vp_getGI(int giNo)
 {
   /*-- Physical output mode: return a physically meaningful value depending on the output type --*/
   if (coreGlobals.nGI && (options.usemodsol & CORE_MODOUT_ENABLE_PHYSOUT_GI))
-    return (int)saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_GI0 + giNo].value);
-  return coreGlobals.gi[giNo];
+    return (giNo >= 0 && giNo < CORE_MODOUT_GI_MAX) ? (int)saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_GI0 + giNo].value) : 0;
+  return (giNo >= 0 && giNo < CORE_MAXGI) ? coreGlobals.gi[giNo] : 0;
 }
 
 /*-------------------------------------------
@@ -147,8 +154,15 @@ int vp_getChangedSolenoids(vp_tChgSols chgStat)
 	 UINT64 allSol = core_getAllSol();
 	 UINT64 chgSol = (allSol ^ locals.lastSol) & vp_getSolMask64();
 	 locals.lastSol = allSol;
+	 const UINT32 allSolHigh = core_getAllSolHigh(); // not masked: SolMask only covers 1..64
+	 const UINT32 chgSolHigh = allSolHigh ^ locals.lastSolHigh;
+	 locals.lastSolHigh = allSolHigh;
 	 for (ii = 0; ii < CORE_FIRSTCUSTSOL + core_gameData->hw.custSol - 1; ii++)
 	 {
+		if (ii == 64) { // solenoid 65: past the 64 bits
+		  allSol = allSolHigh;
+		  chgSol = chgSolHigh;
+		}
 		if (chgSol & 0x01) {
 		  chgStat[idx].solNo = ii+1; // Solenoid number
 		  chgStat[idx].currStat = (allSol & 0x01);
@@ -216,7 +230,7 @@ int vp_getDIP(int dipBank) {
 /-----------*/
 void vp_setSolMask(int no, int mask) {
 	// TODO This is a horrible B2S compatibility hack - B2S precludes us from adding a proper new setting,
-	// Therefore we use this setting for modulated and PWM settings, also see VPinMame Controller.put_SolMask()
+	// Therefore we use this setting for modulated and PWM settings, also see VPinMAME Controller.put_SolMask()
 	if (1001 <= no && no <= 1200)
 		// Map to solenoid output PWM settings (first solenoid is #1 to #64)
 		vp_setModOutputType(VP_OUT_SOLENOID, no - 1000, mask);
@@ -248,7 +262,7 @@ void vp_setSolMask(int no, int mask) {
 /-----------*/
 int vp_getSolMask(int no) {
 	// TODO This is a horrible B2S compatibility hack - B2S precludes us from adding a proper new setting,
-	// Therefore we use this setting for modulated and PWM settings, also see VPinMame Controller.put_SolMask()
+	// Therefore we use this setting for modulated and PWM settings, also see VPinMAME Controller.put_SolMask()
 	if (1001 <= no && no <= 1200)
 		return vp_getModOutputType(VP_OUT_SOLENOID, no - 1000);
 	else if (1201 <= no && no <= 1300)
@@ -282,7 +296,7 @@ void vp_setModOutputType(int output, int no, int type) {
 		pos = CORE_MODOUT_LAMP0 + no - 1;
 	else if (output == VP_OUT_ALPHASEG && 1 <= no && no <= coreGlobals.nAlphaSegs)
 		pos = CORE_MODOUT_SEG0 + no - 1;
-	if (pos != -1)
+	if (pos != -1 && !core_is_pwm_output_driver_value(pos)) // the driver writes the value itself: no integrator for it (see core_set_pwm_output_driver_value)
 		core_set_pwm_output_type(pos, 1, type);
 }
 

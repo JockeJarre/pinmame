@@ -794,6 +794,10 @@ void *memory_get_read_ptr(int cpunum, offs_t offset)
 	if (entry > STATIC_RAM || (minbits == 0 && entry != STATIC_RAM))
 		return NULL;
 	offset -= handlist[entry].offset;
+	/* cpu_bankbase[STATIC_RAM] is rewritten to the active CPU's base on every
+	context switch, so resolve against the requested CPU's own base instead. */
+	if (entry == STATIC_RAM)
+		return (UINT8 *)cpudata[cpunum].rambase + offset;
 	return &cpu_bankbase[entry][offset];
 }
 
@@ -821,6 +825,10 @@ void *memory_get_write_ptr(int cpunum, offs_t offset)
 	if (entry > STATIC_RAM || (minbits == 0 && entry != STATIC_RAM))
 		return NULL;
 	offset -= handlist[entry].offset;
+	/* cpu_bankbase[STATIC_RAM] is rewritten to the active CPU's base on every
+	context switch, so resolve against the requested CPU's own base instead. */
+	if (entry == STATIC_RAM)
+		return (UINT8 *)cpudata[cpunum].rambase + offset;
 	return &cpu_bankbase[entry][offset];
 }
 
@@ -1811,6 +1819,12 @@ extern void bpr_memref(UINT32 adr, int length);
 #define bpr_memref(a,l)
 #endif
 
+#ifdef REMOTE_DEBUG
+#include "remote_debug/remote_debug.h"
+#else
+#define remote_debug_memref(a,l,w,d)
+#endif
+
 #define READBYTE8(name,abits,lookup,handlist,mask)										\
 data8_t name(offs_t address)															\
 {																						\
@@ -1818,7 +1832,7 @@ data8_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,0,0);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,0)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,0)];							\
@@ -1844,7 +1858,7 @@ data8_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,0,0);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -1871,7 +1885,7 @@ data8_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,0,0);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -1898,7 +1912,7 @@ data8_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,0,0);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -1925,7 +1939,7 @@ data8_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,0,0);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -1958,7 +1972,7 @@ data16_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,0,0);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -1984,7 +1998,7 @@ data16_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,0,0);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2011,7 +2025,7 @@ data16_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,0,0);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2044,7 +2058,7 @@ data32_t name(offs_t address)															\
 	MEMREADSTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~3;bpr_memref(address,4);																	\
+	address &= mask & ~3;bpr_memref(address,4);remote_debug_memref(address,4,0,0);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2075,7 +2089,7 @@ void name(offs_t address, data8_t data)													\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,1,data);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,0)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,0)];							\
@@ -2100,7 +2114,7 @@ void name(offs_t address, data8_t data)													\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,1,data);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -2126,7 +2140,7 @@ void name(offs_t address, data8_t data)													\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,1,data);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -2152,7 +2166,7 @@ void name(offs_t address, data8_t data)													\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,1,data);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2178,7 +2192,7 @@ void name(offs_t address, data8_t data)													\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask;bpr_memref(address,1);																	\
+	address &= mask;bpr_memref(address,1);remote_debug_memref(address,1,1,data);				\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2210,7 +2224,7 @@ void name(offs_t address, data16_t data)												\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,1,data);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,1)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,1)];							\
@@ -2235,7 +2249,7 @@ void name(offs_t address, data16_t data)												\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,1,data);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2261,7 +2275,7 @@ void name(offs_t address, data16_t data)												\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~1;bpr_memref(address,2);																	\
+	address &= mask & ~1;bpr_memref(address,2);remote_debug_memref(address,2,1,data);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2293,7 +2307,7 @@ void name(offs_t address, data32_t data)												\
 	MEMWRITESTART																		\
 																						\
 	/* perform lookup */																\
-	address &= mask & ~3;bpr_memref(address,4);																	\
+	address &= mask & ~3;bpr_memref(address,4);remote_debug_memref(address,4,1,data);		\
 	entry = lookup[LEVEL1_INDEX(address,abits,2)];										\
 	if (entry >= SUBTABLE_BASE)															\
 		entry = lookup[LEVEL2_INDEX(entry,address,abits,2)];							\
@@ -2608,39 +2622,46 @@ int port_address_bits_of_cpu(int cputype)
 	basic static handlers
 -------------------------------------------------*/
 
+/* unmapped accesses on small address spaces fall back to the CPU region, which can be
+   shorter than the address space (e.g. a 32K region on a 64K CPU): stay inside it */
+INLINE int bad_in_region(offs_t byte_offset)
+{
+	return activecpu_address_bits() <= SPARSE_THRESH && byte_offset < cpudata[cpu_getactivecpu()].ramlength;
+}
+
 static READ_HANDLER( mrh8_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory byte read from %08X\n", cpu_getactivecpu(), activecpu_get_pc(), offset);
-	if (activecpu_address_bits() <= SPARSE_THRESH && unmap_value == 0) return cpu_bankbase[STATIC_RAM][offset];
+	if (bad_in_region(offset) && unmap_value == 0) return cpu_bankbase[STATIC_RAM][offset];
 	return unmap_value;
 }
 static READ16_HANDLER( mrh16_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory word read from %08X & %04X\n", cpu_getactivecpu(), activecpu_get_pc(), offset*2, mem_mask ^ 0xffff);
-	if (activecpu_address_bits() <= SPARSE_THRESH && unmap_value == 0) return ((data16_t *)cpu_bankbase[STATIC_RAM])[offset];
+	if (bad_in_region(offset*2+1) && unmap_value == 0) return ((data16_t *)cpu_bankbase[STATIC_RAM])[offset];
 	return unmap_value;
 }
 static READ32_HANDLER( mrh32_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory dword read from %08X & %08X\n", cpu_getactivecpu(), activecpu_get_pc(), offset*4, mem_mask ^ 0xffffffff);
-	if (activecpu_address_bits() <= SPARSE_THRESH && unmap_value == 0) return ((data32_t *)cpu_bankbase[STATIC_RAM])[offset];
+	if (bad_in_region(offset*4+3) && unmap_value == 0) return ((data32_t *)cpu_bankbase[STATIC_RAM])[offset];
 	return unmap_value;
 }
 
 static WRITE_HANDLER( mwh8_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory byte write to %08X = %02X\n", cpu_getactivecpu(), activecpu_get_pc(), offset, data);
-	if (activecpu_address_bits() <= SPARSE_THRESH) cpu_bankbase[STATIC_RAM][offset] = data;
+	if (bad_in_region(offset)) cpu_bankbase[STATIC_RAM][offset] = data;
 }
 static WRITE16_HANDLER( mwh16_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory word write to %08X = %04X & %04X\n", cpu_getactivecpu(), activecpu_get_pc(), offset*2, data, mem_mask ^ 0xffff);
-	if (activecpu_address_bits() <= SPARSE_THRESH) COMBINE_DATA(&((data16_t *)cpu_bankbase[STATIC_RAM])[offset]);
+	if (bad_in_region(offset*2+1)) COMBINE_DATA(&((data16_t *)cpu_bankbase[STATIC_RAM])[offset]);
 }
 static WRITE32_HANDLER( mwh32_bad )
 {
 	logerror("cpu #%d (PC=%08X): unmapped memory dword write to %08X = %08X & %08X\n", cpu_getactivecpu(), activecpu_get_pc(), offset*4, data, mem_mask ^ 0xffffffff);
-	if (activecpu_address_bits() <= SPARSE_THRESH) COMBINE_DATA(&((data32_t *)cpu_bankbase[STATIC_RAM])[offset]);
+	if (bad_in_region(offset*4+3)) COMBINE_DATA(&((data32_t *)cpu_bankbase[STATIC_RAM])[offset]);
 }
 
 static READ_HANDLER( prh8_bad )

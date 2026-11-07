@@ -145,13 +145,8 @@ extern "C" void alt_sound_handle(int boardNo, int cmd)
 		return;
 	}
 
-	//DAR@20230519 not sure what this does
-	int	attenuation = osd_get_mastervolume();
-
-	float master_vol = processor->getMasterVol();
-	while (attenuation++ < 0) {
-		master_vol /= 1.122018454f; // = (10 ^ (1/20)) = 1dB
-	}
+	// follow the master volume (-32..+32 dB, positive values are a gain), like the emulated sound
+	const float master_vol = powf(10.f, (float)osd_get_mastervolume() / 20.f);
 	processor->setMasterVol(master_vol);
 	ALT_DEBUG(0, "Master Volume (Post Attenuation): %.02f", master_vol);
 
@@ -679,6 +674,17 @@ void preprocess_commands(CmdData* cmds_out, int cmd_in)
 			*stored_command = 0;
 			*cmd_filter = 0;
 		}
+	}
+
+	// Bally MPU-17 and MPU-35, and every generation without a case above: PinMAME logs one byte per sound command
+	if (!(hardware_gen & (GEN_ALLWPC | GEN_S11 | GEN_S11X | GEN_S11B2 | GEN_S11C |
+		GEN_DE | GEN_DEDMD16 | GEN_DEDMD32 | GEN_DEDMD64 | GEN_ALLWS | GEN_GTS80A)))
+	{
+		ALT_DEBUG(0, "Hardware Generation: GEN_BY17, GEN_BY35 or other (one byte per command)");
+
+		*stored_command = 0;
+		*cmd_counter = 0;
+		*cmd_filter = 0;
 	}
 
 	OUTDENT;

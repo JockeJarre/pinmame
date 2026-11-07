@@ -887,6 +887,14 @@ SOURCE=.\src\machine\i8155.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\machine\i8256.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\machine\i8256.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\machine\mathbox.c
 # End Source File
 # Begin Source File
@@ -1428,6 +1436,14 @@ SOURCE=.\src\input.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\keyscript.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\keyscript.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\legacy.h
 # End Source File
 # Begin Source File
@@ -1909,6 +1925,18 @@ SOURCE=.\src\windows\winprefix.h
 # Begin Group "sims"
 
 # PROP Default_Filter ""
+# Begin Group "atari"
+
+# PROP Default_Filter ""
+# Begin Group "prelim_atari"
+
+# PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=.\src\wpc\sims\atari\prelim\fourx4.c
+# End Source File
+# End Group
+# End Group
 # Begin Group "s11"
 
 # PROP Default_Filter ""
@@ -2172,6 +2200,14 @@ SOURCE=.\src\wpc\sims\se\prelim\harley.c
 SOURCE=.\src\wpc\sims\se\prelim\monopoly.c
 # End Source File
 # End Group
+# End Group
+# Begin Group "sleic"
+
+# PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=.\src\wpc\sims\sleic\iomoon.c
+# End Source File
 # End Group
 # End Group
 # Begin Source File
@@ -2592,7 +2628,35 @@ SOURCE=.\src\wpc\regama.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\wpc\rfranco.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\rfranco.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\rfrancogames.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\wpc\rotation.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\recel.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\recelgames.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\recelsnd.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\wpc\recel.h
 # End Source File
 # Begin Source File
 

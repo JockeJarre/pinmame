@@ -51,7 +51,6 @@
 #  define CORE_SCREENX 320
 #  define CORE_SCREENY 256
 #endif /* VPINMAME */
-#define CORE_SCREENX_INC 4 // hack: increases window width by 4 for alpha/segmented displays, otherwise there is some weird wrap of last segments
 
 /*-----------------
 /  define the game
@@ -198,7 +197,6 @@
 
 #define CORE_SEGHIBIT     0x040
 #define CORE_SEGREV       0x080
-#define CORE_DMDNOAA      0x100
 #define CORE_NODISP       0x200 // VPinMAME only: if flag is set, the display is not included in VPinMAME window
 #define CORE_VIDEO_ROT90  0x400 // Video is rotated 90 degrees
 
@@ -256,7 +254,7 @@ typedef enum {
 
 
 #define PINMAME_VIDEO_UPDATE(name) void (name)(struct mame_bitmap *bitmap, const struct rectangle *cliprect, core_tLCDLayout *layout)
-typedef int (*ptPinMAMEvidUpdate)(struct mame_bitmap *bitmap, const struct rectangle *cliprect, const core_tLCDLayout *layout);
+typedef void (*ptPinMAMEvidUpdate)(struct mame_bitmap *bitmap, const struct rectangle *cliprect, const core_tLCDLayout *layout);
 
 /*---------------------------------------
 / WPC driver constants
@@ -426,8 +424,8 @@ typedef int (*ptPinMAMEvidUpdate)(struct mame_bitmap *bitmap, const struct recta
 #define CORE_MODOUT_BULB_44_18V_DC_S11   203 /* Incandescent #44/555 Bulb connected to 18V, commonly used for lamp matrix with short strobing */
 #define CORE_MODOUT_BULB_44_18V_DC_SE    204 /* Incandescent #44/555 Bulb connected to 18V, commonly used for lamp matrix with short strobing */
 #define CORE_MODOUT_BULB_44_20V_DC_CC    205 /* Incandescent #44/555 Bulb connected to 20V, commonly used for lamp matrix with short strobing */
-#define CORE_MODOUT_BULB_44_20V_AC_POS_BY 206/* Incandescent #44/555 Bulb connected to AC 20.5V with a diode for positive half (Bally 6803) */
-#define CORE_MODOUT_BULB_44_20V_AC_NEG_BY 207/* Incandescent #44/555 Bulb connected to AC 20.5V with a diode for negative half (Bally 6803) */
+#define CORE_MODOUT_BULB_44_10V_AC_POS_BY 206/* Incandescent #44/555 Bulb connected to AC 10.25V with a diode for positive half (Bally 6803) */
+#define CORE_MODOUT_BULB_44_10V_AC_NEG_BY 207/* Incandescent #44/555 Bulb connected to AC 10.25V with a diode for negative half (Bally 6803) */
 #define CORE_MODOUT_BULB_89_20V_DC_WPC   301 /* Incandescent #89 Bulb connected to 20V, commonly used for flashers */
 #define CORE_MODOUT_BULB_89_20V_DC_GTS3  302 /* Incandescent #89 Bulb connected to 20V, commonly used for flashers */
 #define CORE_MODOUT_BULB_89_32V_DC_S11   303 /* Incandescent #89 Bulb connected to 32V, used for flashers on S11 with output strobing */
@@ -462,7 +460,7 @@ typedef struct {
 
 typedef void (*core_tPhysOutputIntegrator)(const double, const int, const int, const int);
 
-#define FLIP_BUFFER_SIZE 32               /* Number of state considered for PWM integration. Must be even (and should a power of 2 for performance reason) */
+#define FLIP_BUFFER_SIZE 32               /* Number of flips kept for PWM integration. Must be a power of 2 (flip positions are free running counters) */
 typedef struct {
    int type;                              /* Type of modulation from CORE_MODOUT_ definitions */
    float value;                           /* Last computed output main physical characteristic (relative brightness for bulbs, strength for solenoids,...) */
@@ -488,11 +486,15 @@ typedef struct {
          int fastOn;
          double lastFlipTimestamp;
          float switchDownLatency;
+         float onValue;                   /* value while on: 1, or a drive strength the driver sets (Capcom flippers) */
       } sol; // Physical model of a solenoid
    } state;
    double flipTimeStamps[FLIP_BUFFER_SIZE];
-   unsigned int flipBufferPos;
-   unsigned int lastIntegrationFlipPos;
+   unsigned int flipBufferPos;            /* Writer: free running flip count; parity is the binary state, % FLIP_BUFFER_SIZE the buffer index */
+   double onTime;                         /* Writer: total ON time up to the last flip */
+   unsigned int lastIntegrationFlipPos;   /* Reader: last integrated flip */
+   double readTime;                       /* Reader: time of the last integration */
+   double readOnTime;                     /* Reader: total ON time up to readTime */
 } core_tPhysicOutput;
 
 #ifdef LSB_FIRST
@@ -596,8 +598,16 @@ void core_setLampBlank(volatile UINT8 *lampMatrix, int col, int row);
 
 /*-- switch handling --*/
 extern void core_setSw(int swNo, int value);
+/* Called with the matrix entry each time core_setSw changes a switch, from the caller's thread: a
+   driver that samples the matrix (SPIKE 1) learns of a closure that opened again before it looked */
+extern void (*core_swChangedHook)(int swMatrixNo);
 extern int core_getSw(int swNo);
 extern void core_updInvSw(int swNo, int inv);
+/*-- switch set by the host (VPinMAME, libpinmame), logged by -record and replayed by -playback --*/
+extern void core_setHostSw(int swNo, int value);
+extern struct _mame_file *core_swlog_fopen(const char *name, const char *ext, int write);
+extern int core_inputlog_open(int game, const char *record, const char *playback);
+extern void core_inputlog_close(void);
 
 /*-- get a switch column. (colEn=bits) --*/
 extern int core_getSwCol(int colEn);
@@ -606,18 +616,24 @@ extern int core_getSwCol(int colEn);
 extern int core_getSol(int solNo);
 extern int core_getPulsedSol(int solNo);
 extern UINT64 core_getAllSol(void);
+extern UINT32 core_getAllSolHigh(void);
 extern void core_getAllPhysicSols(float* const state);
 
 /*-- AC sync and PWM integration --*/
 extern void core_update_pwm_outputs(const int startIndex, const int count);
+extern float core_get_pwm_output(const int index); // one output's value: integrated up to now on the emulation thread, the published one elsewhere
+extern void core_update_pwm_output_sol_2_state(const double now, const int index, const int isFlip, const int state);
 INLINE void core_update_pwm_gis(void) { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_GI)) core_update_pwm_outputs(CORE_MODOUT_GI0, coreGlobals.nGI); }
 INLINE void core_update_pwm_solenoids(void) { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) core_update_pwm_outputs(CORE_MODOUT_SOL0, coreGlobals.nSolenoids); }
 INLINE void core_update_pwm_segments(void) { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS)) core_update_pwm_outputs(CORE_MODOUT_SEG0, coreGlobals.nAlphaSegs); }
 INLINE void core_update_pwm_lamps(void) { if (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_LAMPS)) core_update_pwm_outputs(CORE_MODOUT_LAMP0, coreGlobals.nLamps); }
 extern void core_set_pwm_output_type(int startIndex, int count, int type);
+extern void core_set_pwm_output_driver_value(int startIndex, int count);
+extern int  core_is_pwm_output_driver_value(int index);
 extern void core_set_pwm_output_types(int startIndex, int count, int* outputTypes);
 extern void core_set_pwm_output_bulb(int startIndex, int count, int bulb, float U, int isAC, float serial_R, float relative_brightness);
 extern void core_set_pwm_output_led_vfd(int startIndex, int count, int isVFD, float relative_brightness); // Relative brightness should be (period length / pulse length)
+extern int  core_get_pwm_output_type(int index);
 extern void core_write_pwm_output(int startIndex, int count, UINT8 bitStates); // Write binary state of count outputs, taking care of PWM integration based on physical model of connected device
 extern void core_write_pwm_output_8b(int startIndex, UINT8 bitStates);
 INLINE void core_write_pwm_output_16b(int index, UINT16 bitStates) { core_write_pwm_output_8b(index, bitStates & 0xFF); core_write_pwm_output_8b(index + 8, bitStates >> 8); }
@@ -635,6 +651,7 @@ INLINE void core_zero_cross(void) { coreGlobals.lastACPositiveZeroCrossTimeStamp
 #define CORE_DMD_PWM_FILTER_ALVG2                7
 #define CORE_DMD_PWM_FILTER_CAPCOM_128x32        8
 #define CORE_DMD_PWM_FILTER_CAPCOM_256x64        9
+#define CORE_DMD_PWM_FILTER_PINHECK_16           10
 
 // note that the following are only used to support the pre-PWM legacy path (e.g. for old colorizations)
 #define CORE_DMD_PWM_COMBINER_GTS3_4C_A          0
@@ -647,9 +664,11 @@ INLINE void core_zero_cross(void) { coreGlobals.lastACPositiveZeroCrossTimeStamp
 #define CORE_DMD_PWM_COMBINER_SUM_4              7
 #define CORE_DMD_PWM_COMBINER_SUM_1_2_1          8
 #define CORE_DMD_PWM_COMBINER_1                  9
+#define CORE_DMD_PWM_COMBINER_SUM_16             10
 
 #define CORE_DMD_PWM_PREINTEGRATED_LINEAR_4  0x100
 #define CORE_DMD_PWM_PREINTEGRATED_SAM       0x101
+#define CORE_DMD_PWM_PREINTEGRATED_LINEAR_16 0x102
 
 extern void core_dmd_pwm_init(const core_tLCDLayout* layout, const int filter, const int raw_combiner, const int isReversedByte);
 extern void core_dmd_submit_frame(const core_tLCDLayout* layout, const UINT8* frame, const int ntimes);
@@ -708,6 +727,13 @@ INLINE unsigned int core_BitColToNum(unsigned int n)
 #else
    return __builtin_ctz(n);
 #endif
+}
+
+// Same as core_BitColToNum for strobes where several bits can be active at once
+// (seen at power-up, before the CPU drives the port): uses the lowest one
+INLINE unsigned int core_LowestBitColToNum(unsigned int n)
+{
+   return core_BitColToNum(n & (0u - n));
 }
 
 //

@@ -36,6 +36,7 @@
 static struct {
   struct sndbrdData brdData;
   int data_to_main_cpu;
+  int bsmtRun; // the BSMT2000's reset line (D6 of the watchdog/LED latch, high: running), see watch_w
 } alvgslocals;
 
 //common
@@ -180,6 +181,9 @@ MACHINE_DRIVER_START(alvg_s1)
   MDRV_SOUND_ATTRIBUTES(SOUND_SUPPORTS_STEREO)
 MACHINE_DRIVER_END
 
+// TODO VIA6522_ACCURATE: not adapted, keeps the old core. The VIA IRQ and the periodic alvgs_firq both drive the 6809 FIRQ
+// (assert/clear vs PULSE_LINE): the accurate core only reports IRQ changes, so a pulse could drop a pending VIA FIRQ.
+// OR both sources (like gts3/alvg do for their two VIAs) before setting accurate here
 static struct via6522_interface via_2_interface =
 {
 	/*inputs : A/B           */ xvia_2_a_r, xvia_2_b_r,
@@ -222,7 +226,7 @@ static READ_HANDLER(alvgs_ctrl_r);
 /* 12 Voice Style BSMT Chip */
 /* Schematics (pistol poker) suggest an 8 bit shift (<<8), but sound is way too loud and clips, so we use 0 */
 static struct BSMT2000interface alvgs_bsmt2000Int = {
-  1, {24000000}, {12}, {ALVGS_ROMREGION}, {100}, 0, 0, 0 // should be BSMT2000 mode 5, as it does not trigger ADPCM commands //!! does not trigger reset, thus cannot set BSMT2000 mode itself currently
+  1, {24000000}, {12}, {ALVGS_ROMREGION}, {100}, 0, 0, 0 // the sound program selects mode 5 (12 voices, no ADPCM) when it resets the chip, see watch_w
 };
 
 /* Sound board */
@@ -233,11 +237,18 @@ const struct sndbrdIntf alvgs2Intf = {
 /*Functions*/
 
 //WATCHDOG AND LED CHIP WRITE
-//D6 = Watchdog
+//D6 = Watchdog, also the BSMT2000's reset (low: held in reset)
 //D5 = Sound LED
+//The sound program (World Tour, Mystery Castle, Pistol Poker, Dinosaur Eggs; e.g. World Tour 0x5425) writes register 5,
+//then 0x00 and 0xff here, so the chip restarts on the release in mode 5 (from the register select latch, as on the Data East
+//boards); afterwards every write keeps D6 high (0x40/0x60, from the FIRQ)
 static WRITE_HANDLER(watch_w)
 {
-	alvg_UpdateSoundLEDS(0,(data&0x40)>>6);
+	const int run = (data & 0x40) != 0;
+	if (run && !alvgslocals.bsmtRun)
+		BSMT2000_sh_reset();
+	alvgslocals.bsmtRun = run;
+	alvg_UpdateSoundLEDS(0,(data&0x20)>>5); // D5, which the sound program blinks
 	//if(data & 0x80) watchdog_reset_w(1,0);
 	if(data > 0 && !(data&0x60 || data&0x40))
 		logerror("UNKNOWN DATA IN SOUND WATCH_W: data=%x\n",data);
@@ -265,7 +276,9 @@ static WRITE_HANDLER(bsmt_write)
 	}
 }
 //RDSTATE line looks to D6&D7 for a busy from BSMT
-static READ_HANDLER(bsmtready_r) { return 0xc0; }
+//The HLE is always ready (0xc0); with the LLE both bits drop while a write is pending (polarity
+//inferred from the always-ready value the HLE needs, not checked against the sound program)
+static READ_HANDLER(bsmtready_r) { return BSMT2000_status_0_r() ? 0xc0 : 0x00; }
 
 static MEMORY_READ_START(alvgs_readmem)
   { 0x0100, 0x0100, bsmtready_r },

@@ -8,14 +8,7 @@
 
 #pragma once
 
-#ifdef _MSC_VER
-#include <intrin.h>
-#ifdef _M_ARM64
-#include <arm64intr.h>
-#endif
-#elif (!defined(__GNUC__) || (__GNUC__ > 3) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
-#include <x86intrin.h>
-#endif
+#include "bitops.h"
 
 #include "hash.h"
 #include "palette.h"
@@ -230,6 +223,10 @@ enum
 #define		ROMREGION_DATATYPEROM	0x00000000
 #define		ROMREGION_DATATYPEDISK	0x00010000
 
+#define ROMREGION_MAPPEDMASK		0x00020000			/* map the files from the set on disk (get_mapped_rom()) */
+#define		ROMREGION_LOADED		0x00000000
+#define		ROMREGION_MAPPED		0x00020000
+
 /* ----- per-region macros ----- */
 #define ROMREGION_GETTYPE(r)		((size_t)(r)->_hashdata)
 #define ROMREGION_GETLENGTH(r)		((r)->_length)
@@ -246,6 +243,7 @@ enum
 #define ROMREGION_GETDATATYPE(r)	(ROMREGION_GETFLAGS(r) & ROMREGION_DATATYPEMASK)
 #define ROMREGION_ISROMDATA(r)		(ROMREGION_GETDATATYPE(r) == ROMREGION_DATATYPEROM)
 #define ROMREGION_ISDISKDATA(r)		(ROMREGION_GETDATATYPE(r) == ROMREGION_DATATYPEDISK)
+#define ROMREGION_ISMAPPED(r)		((ROMREGION_GETFLAGS(r) & ROMREGION_MAPPEDMASK) == ROMREGION_MAPPED)
 
 
 /* ----- per-ROM constants ----- */
@@ -447,6 +445,7 @@ void save_screen_snapshot(struct mame_bitmap *bitmap);
 void *get_disk_handle(int diskindex);
 
 /* ROM processing */
+struct GameDriver;
 int rom_load(const struct RomModule *romp);
 const struct RomModule *rom_first_region(const struct GameDriver *drv);
 const struct RomModule *rom_next_region(const struct RomModule *romp);
@@ -454,6 +453,13 @@ const struct RomModule *rom_first_file(const struct RomModule *romp);
 const struct RomModule *rom_next_file(const struct RomModule *romp);
 const struct RomModule *rom_first_chunk(const struct RomModule *romp);
 const struct RomModule *rom_next_chunk(const struct RomModule *romp);
+
+/* A ROMREGION_MAPPED region has no memory: the loader maps each of its files read-only from the
+   set on disk - a stored (uncompressed) zip entry or a file in the set's folder - and keeps it
+   until the machine shuts down. A file it cannot map (a compressed entry, or a host that does not
+   map files) it holds in memory instead. NULL for a file that is not open */
+const UINT8 *get_mapped_rom(const struct RomModule *romp, UINT32 *length, int *mapped);
+void close_mapped_roms(void);
 
 void printromlist(const struct RomModule *romp,const char *name);
 
@@ -520,230 +526,6 @@ void printromlist(const struct RomModule *romp,const char *name);
 		 (BIT(val, B2) <<  2) | \
 		 (BIT(val, B1) <<  1) | \
 		 (BIT(val, B0) <<  0))
-
-
-/***************************************************************************
-
-	Useful functions to deal with bit rotations/byte swaps/bit reversals
-
-***************************************************************************/
-
-// cyclic left shift, aka <<<
-INLINE unsigned long long rotl_64(const unsigned long long x, const unsigned int count)
-{
-#ifdef _MSC_VER
-    return _rotl64(x, count);
-#elif !defined(__arm__) && !defined(__aarch64__) && (defined(__INTEL_COMPILER) || (defined(__GNUC__) && (__GNUC__ > 3)) || defined(__clang__))
-    return __rolq(x, count);
-#else
-    return (x<<count) | (x>>( (unsigned int)(-(int)count)&63 )); // -count&63 instead of 64-count to handle count==0
-#endif
-}
-
-INLINE unsigned int rotl_32(const unsigned int x, const unsigned int count)
-{
-    //assert(count < 32);
-#if defined(_MSC_VER) || defined(__INTEL_COMPILER)
-    return _rotl(x, count);
-#else
-    return (x<<count) | (x>>( (unsigned int)(-(int)count)&31 )); // -count&31 instead of 32-count to handle count==0
-#endif
-}
-
-// cyclic right shift, aka >>>
-INLINE unsigned long long rotr_64(const unsigned long long x, const unsigned int count)
-{
-#ifdef _MSC_VER
-    return _rotr64(x, count);
-#elif !defined(__arm__) && !defined(__aarch64__) && (defined(__INTEL_COMPILER) || (defined(__GNUC__) && (__GNUC__ > 3)) || defined(__clang__))
-    return __rorq(x, count);
-#else
-    return (x>>count) | (x<<( (unsigned int)(-(int)count)&63 )); // -count&63 instead of 64-count to handle count==0
-#endif
-}
-
-INLINE unsigned int rotr_32(const unsigned int x, const unsigned int count)
-{
-    //assert(count < 32);
-#if defined(_MSC_VER) || defined(__INTEL_COMPILER)
-    return _rotr(x, count);
-#else
-    return (x>>count) | (x<<( (unsigned int)(-(int)count)&31 )); // -count&31 instead of 32-count to handle count==0
-#endif
-}
-
-//
-
-INLINE unsigned long long swap_byteorder_64(unsigned long long x)
-{
-#if (defined(__GNUC__) && (__GNUC__ > 3)) || defined(__clang__)
-    return __builtin_bswap64(x);
-#elif defined(_MSC_VER)
-    return _byteswap_uint64(x);
-#else
-    x = ((x <<  8) & 0xFF00FF00FF00FF00ull) | ((x >>  8) & 0x00FF00FF00FF00FFull);
-    x = ((x << 16) & 0xFFFF0000FFFF0000ull) | ((x >> 16) & 0x0000FFFF0000FFFFull);
-    return (x << 32) | (x >> 32);
-#endif
-}
-
-INLINE unsigned int swap_byteorder_32(unsigned int x)
-{
-#if (defined(__GNUC__) && (__GNUC__ > 3)) || defined(__clang__)
-    return __builtin_bswap32(x);
-#elif defined(_MSC_VER)
-    return _byteswap_ulong(x);
-#else
-    x = ((x << 8) & 0xFF00FF00u) | ((x >> 8) & 0xFF00FFu);
-    return (x << 16) | (x >> 16);
-#endif
-}
-
-//
-
-// input limited to 0..15! (slower than using a lookup table)
-INLINE unsigned char __brevnyb(unsigned char i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbit(i) >> 28;
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = ((i >> 1) & 0x5u) | ((i & 0x5u)*2);
-    return (i*4 | (i >> 2)) & 0xfu;
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse32)
-    return __builtin_bitreverse32(i) >> 28;
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet
-    return __builtin_arm_rbit(i) >> 28;
-#else
-    i = ((i >> 1) & 0x5u) | ((i & 0x5u)*2);
-    return (i*4 | (i >> 2)) & 0xfu;
-#endif
-}
-
-// (slower than using a small lookup table)
-INLINE unsigned char __brevc(unsigned char i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbit(i) >> 24;
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = ((i >> 1) & 0x55u) | ((i & 0x55u)*2);
-    i = ((i >> 2) & 0x33u) | ((i & 0x33u)*4);
-    return i*16 | (i >> 4);
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse8)
-    return __builtin_bitreverse8(i);
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet
-    return __builtin_arm_rbit(i) >> 24;
-#else
-    i = ((i >> 1) & 0x55u) | ((i & 0x55u)*2);
-    i = ((i >> 2) & 0x33u) | ((i & 0x33u)*4);
-    return i*16 | (i >> 4);
-    //return (unsigned char)((((i * 0x80200802ull) & 0x0884422110ull) * 0x0101010101ull) >> 32);
-#endif
-}
-
-// input limited to 14bits!
-INLINE unsigned short __brev14(unsigned short i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbit(i) >> 18;
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = ((i >> 1) & 0x5555u) | ((i & 0x5555u)*2);
-    i = ((i >> 2) & 0x3333u) | ((i & 0x3333u)*4);
-    i = ((i >> 4) & 0x0f0fu) | ((i & 0x0f0fu)*16);
-    return i*64 | (i >> 10);
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse32)
-    return __builtin_bitreverse32(i) >> 18;
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet
-    return __builtin_arm_rbit(i) >> 18;
-#else
-    i = ((i >> 1) & 0x5555u) | ((i & 0x5555u)*2);
-    i = ((i >> 2) & 0x3333u) | ((i & 0x3333u)*4);
-    i = ((i >> 4) & 0x0f0fu) | ((i & 0x0f0fu)*16);
-    return i*64 | (i >> 10);
-#endif
-}
-
-INLINE unsigned short __brevs(unsigned short i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbit(i) >> 16;
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = ((i >> 1) & 0x5555u) | ((i & 0x5555u)*2);
-    i = ((i >> 2) & 0x3333u) | ((i & 0x3333u)*4);
-    i = ((i >> 4) & 0x0f0fu) | ((i & 0x0f0fu)*16);
-    return i*256 | (i >> 8);
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse16)
-    return __builtin_bitreverse16(i);
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet //!! use arm_acle.h ? __rev or something?
-    return __builtin_arm_rbit(i) >> 16;
-#else
-    i = ((i >> 1) & 0x5555u) | ((i & 0x5555u)*2);
-    i = ((i >> 2) & 0x3333u) | ((i & 0x3333u)*4);
-    i = ((i >> 4) & 0x0f0fu) | ((i & 0x0f0fu)*16);
-    return i*256 | (i >> 8);
-#endif
-}
-
-INLINE unsigned int __brev(unsigned int i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbit(i);
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = rotr_32(i & 0xaaaaaaaau, 2) | (i & 0x55555555u);
-    i = rotr_32(i & 0x66666666u, 4) | (i & 0x99999999u);
-    i = rotr_32(i & 0x1e1e1e1eu, 8) | (i & 0xe1e1e1e1u);
-    i = rotl_32(i, 7);
-    return swap_byteorder_32(i);
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse32)
-    return __builtin_bitreverse32(i);
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet //!! use arm_acle.h ? __rev or something?
-    return __builtin_arm_rbit(i);
-#else
-    /*i = i*65536 | (i >> 16);
-    i =    ((i & 0x00ff00ffu)*256)  | ((i & 0xff00ff00u) >> 8);
-    i =    ((i & 0x0f0f0f0fu)*16)   | ((i & 0xf0f0f0f0u) >> 4);
-    i =    ((i & 0x33333333u)*4)    | ((i & 0xccccccccu) >> 2);
-    return ((i & 0x55555555u)*2) | ((i & 0xaaaaaaaau) >> 1);*/
-    /*i = ((i >> 1) & 0x55555555u) | ((i & 0x55555555u)*2);
-    i = ((i >> 2) & 0x33333333u) | ((i & 0x33333333u)*4);
-    i = ((i >> 4) & 0x0f0f0f0fu) | ((i & 0x0f0f0f0fu)*16);
-    i = ((i >> 8) & 0x00ff00ffu) | ((i & 0x00ff00ffu)*256);
-    return i*65536 | (i >> 16);*/
-    i = rotr_32(i & 0xaaaaaaaau, 2) | (i & 0x55555555u);
-    i = rotr_32(i & 0x66666666u, 4) | (i & 0x99999999u);
-    i = rotr_32(i & 0x1e1e1e1eu, 8) | (i & 0xe1e1e1e1u);
-    i = rotl_32(i, 7);
-    return swap_byteorder_32(i);
-#endif
-}
-
-INLINE unsigned long long __brevll(unsigned long long i)
-{
-#if defined(_M_ARM64) && defined(_MSC_VER)
-    return __rbitll(i);
-#elif defined(_MSC_VER) || (defined(__MINGW32__) && defined(__GNUC__) && (__GNUC__ < 4))
-    i = rotr_64(i & 0xaaaaaaaaaaaaaaaaull, 2) | (i & 0x5555555555555555ull);
-    i = rotr_64(i & 0x6666666666666666ull, 4) | (i & 0x9999999999999999ull);
-    i = rotr_64(i & 0x1e1e1e1e1e1e1e1eull, 8) | (i & 0xe1e1e1e1e1e1e1e1ull);
-    i = rotl_64(i, 7);
-    return swap_byteorder_64(i);
-#elif defined(__has_builtin) && __has_builtin(__builtin_bitreverse64)
-    return __builtin_bitreverse64(i);
-#elif defined(__aarch64__) && defined(__clang__) //!! gcc does not have an intrinsic yet
-    return __builtin_arm_rbit64(i);
-#else
-    /*i = (i << 32) | (i >> 32);
-    i =    ((i & 0x0000ffff0000ffffull)*65536) | ((i & 0xffff0000ffff0000ull) >> 16);
-    i =    ((i & 0x00ff00ff00ff00ffull) * 256) | ((i & 0xff00ff00ff00ff00ull) >>  8);
-    i =    ((i & 0x0f0f0f0f0f0f0f0full) *  16) | ((i & 0xf0f0f0f0f0f0f0f0ull) >>  4);
-    i =    ((i & 0x3333333333333333ull) *   4) | ((i & 0xccccccccccccccccull) >>  2);
-    return ((i & 0x5555555555555555ull) *   2) | ((i & 0xaaaaaaaaaaaaaaaaull) >>  1);*/
-    i = rotr_64(i & 0xaaaaaaaaaaaaaaaaull, 2) | (i & 0x5555555555555555ull);
-    i = rotr_64(i & 0x6666666666666666ull, 4) | (i & 0x9999999999999999ull);
-    i = rotr_64(i & 0x1e1e1e1e1e1e1e1eull, 8) | (i & 0xe1e1e1e1e1e1e1e1ull);
-    i = rotl_64(i, 7);
-    return swap_byteorder_64(i);
-#endif
-}
 
 
 #ifdef __cplusplus

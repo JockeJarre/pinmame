@@ -43,6 +43,7 @@ DRIVERNV(wldtexas)      // Wild Texas (Firepower II clone)
 // ALLIED LEISURE INC.
 // --------------------
 // early Allied solid-state games don't use a CPU!
+DRIVERNV(allied)        // System (not a game)
 DRIVERNV(suprpick)      // 01/77 Roy Clark Super Picker
 DRIVERNV(thndbolt)      // 11/77 Thunderbolt
 DRIVERNV(hoedown)       // 03/78 Hoe Down
@@ -89,6 +90,9 @@ DRIVERNV(test8031)      //Test 8031 cpu core
 // APPLE TIME
 // --------------------
 DRIVERNV(thndrman)      //Thunder Man (Zaccaria hardware)
+DRIVERNV(thndrmne)      //Thunder Man (English Speech MOD)
+DRIVERNV(thndrmnz)      //Thunder Man (Zaccaria CPU Board Conversion MOD)
+DRIVERNV(thndrmnze)     //Thunder Man (Zaccaria CPU Board Conversion, English Speech MOD)
 
 // --------------------
 // ARKON
@@ -510,6 +514,7 @@ DRIVER(trek,120)        //               01/92 Star Trek 25th Anniversary (1.20)
 DRIVER(trek,200)        //               04/92 Star Trek 25th Anniversary (2.00)
 DRIVER(trek,201)        //               04/92 Star Trek 25th Anniversary (2.01)
 DRIVER(trek,300)        //               04/20 Star Trek 25th Anniversary (3.00 unofficial MOD)
+DRIVER(trek,301)        //               09/26 Star Trek 25th Anniversary (3.01 unofficial MOD)
 DRIVER(hook,401p)       //Data East MPU: 11/91 Hook (4.01 with Prototype Sound)
 DRIVER(hook,400)        //               01/92 Hook (4.01, Display 4.00)
 DRIVER(hook,f401)       //               01/92 Hook (4.01, French Display 4.01)
@@ -586,6 +591,11 @@ DRIVERNV(detest)        //Data East MPU: ??/?? DE Test Chip
 DRIVERNV(deleontest4)   //Data East MPU: ??/0? DE Leon Test Chip (version 4)
 
 // --------------------
+// ELBOS
+// --------------------
+DRIVERNV(elgenesi)      //BY35      ??/82 Genesis
+
+// --------------------
 // FASCINATION INTERNATIONAL, INC.
 // --------------------
 DRIVERNV(royclark)      // 09/77 Roy Clark - The Entertainer
@@ -596,6 +606,7 @@ DRIVERNV(erosone)       // 03/79 Eros One
 // GAME PLAN GAMES
 // -------------------
 /*Games below are Cocktail #110 Model*/
+DRIVERNV(gp_110)        //Model 110 (not a game)
 DRIVERNV(foxylady)      //Foxy Lady (May 1978)
 DRIVERNV(blvelvet)      //Black Velvet (May 1978)
 DRIVERNV(camlight)      //Camel Lights (May 1978)
@@ -629,6 +640,8 @@ DRIVERNV(cyclopes)      //Cyclopes (December 1985)
 // GOTTLIEB GAMES
 // ------------------
 //System 1
+DRIVERNV(gts1)          //System 1 (not a game)
+DRIVERNV(gts1s)         //System 1 with sound board (not a game)
 DRIVERNV(cleoptra)      //S1-409    11/77 Cleopatra
 DRIVERNV(sinbad)        //S1-412    05/78 Sinbad
 DRIVERNV(sinbadn)       //S1-412NO1 05/78 Sinbad (Norway)
@@ -648,6 +661,8 @@ DRIVERNV(roldisco)      //S1-440    02/80 Roller Disco
 DRIVERNV(astannie)      //S1-442    12/80 Asteroid Annie and the Aliens
 DRIVERNV(sys1test)      //S1-T      ??    System1 test prom
 //System 80
+DRIVERNV(gts80)         //System 80 with speech board (not a game)
+DRIVERNV(gts80s)        //System 80 (not a game)
 DRIVERNV(spidermn)      //S80-653:  05/80 Amazing Spider-Man, The
 DRIVERNV(spiderm7)      //          01/08 Amazing Spider-Man, The (7-digit conversion)
 DRIVERNV(panthera)      //S80-652:  06/80 Panthera
@@ -698,6 +713,8 @@ DRIVERNV(eclipse)       //S80-671:  ??/82 Eclipse
 DRIVERNV(eclipse7)      //          01/08 Eclipse (7-digit conversion)
 DRIVERNV(s80tst)        //S80: Text Fixture
 //System 80a
+DRIVERNV(gts80a)        //System 80A with speech board (not a game)
+DRIVERNV(gts80as)       //System 80A (not a game)
 DRIVERNV(dvlsdre)       //S80a-670: 08/82 Devil's Dare (Sound & Speech)
 DRIVERNV(dvlsdre2)      //                Devil's Dare (Sound Only)
 DRIVERNV(dvlsdrea)      //                Devil's Dare (Sound & Speech alternate set)
@@ -984,8 +1001,6 @@ DRIVERNV(pp100)         //Pool Player v1.0 (2000)
 // ----------------
 // INDER GAMES
 // ----------------
-                        //Hot and Cold (1978)
-                        //Screech (1978)
 DRIVERNV(centauri)      //Centaur (1979)
 DRIVERNV(centaurj)      //Centaur (1979, alternate set)
 DRIVERNV(topazi)        //Topaz (1979)
@@ -1012,6 +1027,27 @@ DRIVERNV(ind250cc)      //250 CC (1992)
 DRIVERNV(metalman)      //Metal Man (1992)
 
 // ----------------
+// RECEL GAMES
+// ----------------
+DRIVERNV(recel)         //System III (not a game)
+DRIVERNV(r_fairfght)    //Fair Fight (1978)
+DRIVERNV(r_mrevil)      //Mr. Evil (1978)
+DRIVERNV(r_mrdoom)      //Mr. Doom (1979)
+DRIVERNV(r_screech)     //Screech (1978)
+DRIVERNV(r_pokrplus)    //Poker Plus (1978)
+DRIVERNV(r_alaska)      //Alaska (1978)
+DRIVERNV(r_hotcold)     //Hot & Cold (1978)
+DRIVERNV(r_swash)       //Swash Buckler (1979)
+DRIVERNV(r_cavalier)    //Cavalier (1979)
+DRIVERNV(r_quijote)     //Don Quijote (1979)
+DRIVERNV(r_torneo)      //Torneo (1978)
+DRIVERNV(r_torneoa)     //Torneo (corrected dump, 3 balls)
+DRIVERNV(r_crzyrace)    //Crazy Race (1978)
+DRIVERNV(r_flipper)     //Flipper Game, The (1980)
+DRIVERNV(r_blackmag)    //Black Magic (1980)
+DRIVERNV(r_blackm4)     //Black Magic 4 (1980)
+
+// ----------------
 // JAC VAN HAM
 // ----------------
 DRIVERNV(icemania)      //Ice Mania (??/1986)
@@ -1027,7 +1063,7 @@ DRIVERNV(formula1)      //Formula 1 (??/1988)
 DRIVERNV(leking)        //Le King (??/1983)
 DRIVERNV(olympic)       //Olympic Games (??/1984)
 DRIVERNV(jpapillon)     //Papillon (12/1984)
-                        //Apocalypse Now (??/1985)
+DRIVERNV(apclpsnw)      //Apocalypse Now (??/1985)
                         //Apocalypse Now (??/1986)
 
 // ----------------
@@ -1187,6 +1223,14 @@ DRIVERNV(nemesis)       //Nemesis (1986)
 DRIVERNV(wolfman)       //Wolf Man (1987)
 DRIVERNV(odisea)        //Odisea Paris-Dakar (1987)
 DRIVERNV(lancelot)      //Sir Lancelot (1994)
+
+// --------------------
+// RECREATIVOS FRANCO
+// --------------------
+DRIVERNV(supstarf1)     //Super Star rev. 1 (1986)
+DRIVERNV(supstarf2)     //Super Star rev. 2 (1986)
+DRIVERNV(supstarf3)     //Super Star rev. 3 (1986)
+DRIVERNV(supstarf4)     //Super Star rev. 4 (1986)
 
 // ---------------
 // PINSTAR GAMES
@@ -1380,8 +1424,14 @@ DRIVER  (harl,l13)      //           10/99 Harley-Davidson (Sega, 1.03 Spanish)
 // ----------------
 DRIVERNV(bikerace)      // 1992 - Bike Race
 DRIVERNV(bikerac2)      // 1992 - Bike Race (2-ball play)
+DRIVERNV(bikerac3)      // 1992 - Bike Race (V4.1)
+DRIVERNV(bikerc3f)      // 1992 - Bike Race (V4.1, press start MOD, free play)
 DRIVERNV(sleicpin)      // 1993 - Sleic Pin-Ball
+DRIVERNV(sleicpnf)      // 1993 - Sleic Pin-Ball (end-of-game scores MOD, free play)
 DRIVERNV(iomoon)        // 1994 - Io Moon
+DRIVERNV(iomoona)       // 1994 - Io Moon (earlier ROM revision)
+DRIVERNV(iomoont)       // 1994 - Io Moon (PRESS START tournament MOD)
+DRIVERNV(iomoontf)      // 1994 - Io Moon (tournament MOD, free play)
                         // 1996 - Dona Elvira 2
 
 // ----------------
@@ -1426,6 +1476,18 @@ DRIVERNV(michnew)       // 19?? - Michigan Bingo New (Bingo)
 DRIVERNV(montana)       // 19?? - Montana Bingo Stake 6/10 (Bingo)
 DRIVERNV(topgame)       // 19?? - Top Game Laser L10 (Bingo)
 DRIVERNV(topgamet)      // 19?? - Top Game Turbo (Bingo)
+
+// ---------------
+// SPOOKY PINBALL
+// ---------------
+DRIVERNV(pinheck)       // PinHeck System (not a game)
+DRIVERNV(amh_022)       // 2014 - America's Most Haunted (V22)
+DRIVERNV(amh_023)       // 2014 - America's Most Haunted (V23)
+DRIVERNV(dominos_005)   // 2016 - Domino's Spectacular Pinball Adventure (V5)
+DRIVERNV(dominos_006)   // 2016 - Domino's Spectacular Pinball Adventure (V6)
+DRIVERNV(rzspook_019)   // 2016 - Rob Zombie's Spookshow International (V19)
+DRIVERNV(rzspook_026)   // 2016 - Rob Zombie's Spookshow International (V26)
+DRIVERNV(jetsons_004)   // 2017 - Jetsons, The (V4)
 
 // ---------------
 // SPORT MATIC
@@ -2410,6 +2472,27 @@ DRIVER(smanve,100c)     // pinball browser colorized using extend memory
 DRIVER(smanve,101c)     // pinball browser colorized using extend memory
 #endif
 #endif
+// SPIKE 1 System
+#if HAS_SPIKE1
+DRIVER(tfcp,1018)       //SPIKE 1: ??/12 Transformers The Pin - 1.0.18
+DRIVER(avscp,103)       //SPIKE 1: ??/13 Avengers The Pin - 1.0.3
+DRIVER(wwe,135)         //SPIKE 1: ??/15 Wrestlemania - 1.35.0
+DRIVER(wwe,135h)        //         ??/15 Legends of Wrestlemania - 1.35.0 Limited Edition
+DRIVER(wnbjm,155)       //SPIKE 1: ??/15 Whoa Nellie! Big Juicy Melons - 1.55.0
+DRIVER(kiss15,141)      //SPIKE 1: ??/15 KISS - 1.41.0
+DRIVER(kiss15,141h)     //         ??/15 KISS - 1.41.0 Limited Edition
+DRIVER(got,137)         //SPIKE 1: ??/15 Game of Thrones - 1.37.0
+DRIVER(got,137h)        //         ??/15 Game of Thrones - 1.37.0 Limited Edition
+DRIVER(gbust,117)       //SPIKE 1: ??/16 Ghostbusters - 1.17.0
+DRIVER(gbust,117h)      //         ??/16 Ghostbusters - 1.17.0 Limited Edition
+DRIVER(pabst,101)       //SPIKE 1: ??/16 Pabst Can Crusher, The - 1.01.0
+DRIVER(pabst,102)       //         ??/16 Pabst Can Crusher, The - 1.02.0
+DRIVER(smancp,101)      //SPIKE 1: ??/16 Spider-Man The Pin - 1.01
+DRIVER(supreme,101)     //SPIKE 1: ??/18 Supreme - 1.01.0
+DRIVER(primus,103)      //SPIKE 1: ??/18 Primus - 1.03.0
+DRIVER(primus,104)      //         ??/18 Primus - 1.04.0
+DRIVER(heavym20,102)    //SPIKE 1: ??/20 Heavy Metal - 1.02.0
+#endif
 
 // ---------------
 // TABART GAMES
@@ -2833,7 +2916,8 @@ DRIVER(fh,l9b)          //                  Funhouse (L-9 Improved German transl
 DRIVER(fh,d9b)          //                  Funhouse (D-9 Improved German translation MOD) LED Ghost Fix
 DRIVER(fh,905h)         //          04/96 W Funhouse (9.05H)
 DRIVER(fh,906h)         //                  Funhouse (9.06H Coin Play)
-DRIVER(fh,907h)         //          04/26   Funhouse (9.07H LED Ghost Fix + Ballsaver MOD)
+DRIVER(fh,907h)         //          04/26   Funhouse (9.07H Ballsaver MOD)
+DRIVER(fh,905hbs)       //          08/26   Funhouse (9.05H Ballsaver MOD)
 DRIVER(fh,f91)          //          ??/??   Funhouse (FreeWPC 0.91)
 DRIVER(bop,l2)          //WPC-502:  04/91 W Machine: Bride of Pinbot, The (L-2)
 DRIVER(bop,d2)          //                  Machine: Bride of Pinbot, The (D-2) LED Ghost Fix
@@ -2860,6 +2944,7 @@ DRIVER(sf,l1)           //WPC-601:  03/91 W SlugFest (L-1)
 DRIVER(sf,d1)           //                  SlugFest (D-1) LED Ghost Fix
 DRIVER(hurr,l2)         //WPC-512:  08/91 W Hurricane (L-2)
 DRIVER(hurr,d2)         //                  Hurricane (D-2) LED Ghost Fix
+DRIVER(hurr,d2bs)       //          08/26   Hurricane (D-2) LED Ghost Fix + Ball Saver MOD
 DRIVER(t2,l2sp1)        //WPC-513:  07/91 W Terminator 2: Judgment Day (L-2, P-1 Sound)
 DRIVER(t2,l2)           //          07/91 W Terminator 2: Judgment Day (L-2)
 DRIVER(t2,d2)           //                  Terminator 2: Judgment Day (D-2) LED Ghost Fix
@@ -2920,6 +3005,7 @@ DRIVER(taf,d7)          //                  Addams Family, The (D-7) (Prototype 
 DRIVER(taf,d7bs)        //          04/26   Addams Family, The (D-7) (Prototype L-5) Ballsave MOD + LED Ghost Fix
 DRIVER(taf,h4)          //          05/94 B Addams Family, The (H-4)
 DRIVER(taf,i4)          //                  Addams Family, The (I-4) LED Ghost Fix
+DRIVER(taf,i4bs)        //          07/26   Addams Family, The (I-4) Ballsave MOD + LED Ghost Fix
 DRIVER(gw,pb)           //WPC-504:  03/92 W Getaway: High Speed II, The (P-B)
 DRIVER(gw,pc)           //          03/92 W Getaway: High Speed II, The (P-C)
 DRIVER(gw,pd)           //                  Getaway: High Speed II, The (P-D) LED Ghost Fix
@@ -3065,6 +3151,7 @@ DRIVER(sttng,d2)        //                  Star Trek: The Next Generation (DX-2
 DRIVER(sttng,l3)        //          12/93 W Star Trek: The Next Generation (LX-3)
 DRIVER(sttng,l5)        //          12/93 W Star Trek: The Next Generation (LX-5)
 DRIVER(sttng,l7)        //          02/94 W Star Trek: The Next Generation (LX-7 Sound L-1)
+DRIVER(sttng,la7)       //          02/94 W Star Trek: The Next Generation (LA-7 Sound L-1)
 DRIVER(sttng,d7)        //                  Star Trek: The Next Generation (DX-7 Sound L-1) LED Ghost Fix
 DRIVER(sttng,l7c)       //          08/17 W Star Trek: The Next Generation (LX-7C Competition MOD)
 DRIVER(sttng,x7)        //          02/94 W Star Trek: The Next Generation (LX-7 Special Sound L-1)
@@ -3101,15 +3188,16 @@ DRIVER(dm,h6c)          //          11/19   Demolition Man (H-6C Competition MOD
 //DRIVER(dm,h7)           //          03/22   Demolition Man (7.0 Competition MOD) with rude speech //commercial release
 DRIVER(dm,dt099)        //          04/14   Demolition Man (FreeWPC/Demolition Time 0.99)
 DRIVER(dm,dt101)        //          09/14   Demolition Man (FreeWPC/Demolition Time 1.01)
-DRIVER(tafg,h3)         //WPC-538:  ??/94 B Addams Family Special Collectors Edition, The (Home version)
-DRIVER(tafg,i3)         //                  Addams Family Special Collectors Edition, The (Home version, LED Ghost Fix)
-DRIVER(tafg,lx3)        //          10/94 B Addams Family Special Collectors Edition, The (LX-3)
-DRIVER(tafg,dx3)        //                  Addams Family Special Collectors Edition, The (DX-3) LED Ghost Fix
-DRIVER(tafg,la2)        //          10/94 B Addams Family Special Collectors Edition, The (LA-2)
+DRIVER(tafg,h3)         //WPC-538:  ??/94 B Addams Family Special Collectors Edition / Gold, The (Home version)
+DRIVER(tafg,i3)         //                  Addams Family Special Collectors Edition / Gold, The (Home version, LED Ghost Fix)
+DRIVER(tafg,i3bs)       //          07/26   Addams Family Special Collectors Edition / Gold, The (Home version, Ballsave MOD + LED Ghost Fix)
+DRIVER(tafg,lx3)        //          10/94 B Addams Family Special Collectors Edition / Gold, The (LX-3)
+DRIVER(tafg,dx3)        //                  Addams Family Special Collectors Edition / Gold, The (DX-3) LED Ghost Fix
+DRIVER(tafg,la2)        //          10/94 B Addams Family Special Collectors Edition / Gold, The (LA-2)
 //DRIVER(tafg,lx2) exists, see https://www.flippermarkt.de/forum/threads/taf-ballsaver.290937/post-2343244
-DRIVER(tafg,da2)        //                  Addams Family Special Collectors Edition, The (DA-2) LED Ghost Fix
-DRIVER(tafg,la3)        //          10/94 B Addams Family Special Collectors Edition, The (LA-3)
-DRIVER(tafg,da3)        //                  Addams Family Special Collectors Edition, The (DA-3) LED Ghost Fix
+DRIVER(tafg,da2)        //                  Addams Family Special Collectors Edition / Gold, The (DA-2) LED Ghost Fix
+DRIVER(tafg,la3)        //          10/94 B Addams Family Special Collectors Edition / Gold, The (LA-3)
+DRIVER(tafg,da3)        //                  Addams Family Special Collectors Edition / Gold, The (DA-3) LED Ghost Fix
 DRIVER(wcs,l2)          //WPC-531:  06/94 B World Cup Soccer (LX-2)
 DRIVER(wcs,d2)          //                  World Cup Soccer (DX-2) LED Ghost Fix
 DRIVER(wcs,l3c)         //          06/16 B World Cup Soccer (LX-3C)
@@ -3319,6 +3407,151 @@ DRIVER(tfa,13)          //WPC-584T: 09/91   Test fixture Alphanumeric
 DRIVER(tfdmd,l3)        //WPC-584T: 09/91   Test fixture DMD
 DRIVER(tfs,12)          //WPC-584S: 01/95   Test fixture Security
 DRIVER(tf95,12)         //WPC-648:  01/95   Test fixture WPC95
+
+#if HAS_MEDIAGX
+// Revenge From Mars' own internal revision history: It runs 0.50 and the following with a
+// date and a XINA version each, which is where the dates and XINA numbers on the comment-only
+// lines below come from. Unlike Episode I's changelog it records no mask ROM builds at all, so
+// what is in RFM's masked Prism pairs is known only from the images themselves - 0.1 on the
+// rev. 1 card and 0.80 on rev. 2(?) - with XINA 1.03 ("50070 0.1 masked ROMs") confirming the first.
+//
+// Where it and a package disagree, we believe the package: its boot data is what the machine
+// actually runs. The log says 2.00 used XINA 1.23 while the shipped 2.00 boot data reads 1.22,
+// and the file is the 2.10 tree (GAME_MINOR = 10, dated 01/2019) whose log stops at 2.00 - so it
+// was simply not kept current, which is the unofficial line's way of working rather than
+// anything meaningful. The XINA numbers on the official versions below were cross-checked
+// against their own boot data and agree.
+
+// myPinballs'/applejuice's RFM line: Their opto expansion (switches 53-56) does a 6 ball
+// trough, recognised from 2.22, and physical ball locking, which is what the kit's "v2.6 and above"
+// is about - so every set below 2.60 also runs on an unmodified playfield
+DRIVER(rfm,260)         //          08/24   Pinball 2000: Revenge From Mars (2.60 unofficial MOD)    // requires the opto expander
+DRIVER(rfm,250)         //          12/22   Pinball 2000: Revenge From Mars (2.50 unofficial MOD)
+DRIVER(rfm,224r3)       //          01/22   Pinball 2000: Revenge From Mars (2.24 r3 unofficial MOD) // 29 Jan, the final 2.24: adds a Lyman Sheats tribute; also released as 2.42
+DRIVER(rfm,224r2)       //          01/22   Pinball 2000: Revenge From Mars (2.24 r2 unofficial MOD) // 13 Jan: fixes an extra ball being awarded twice
+DRIVER(rfm,224r1)       //          12/21   Pinball 2000: Revenge From Mars (2.24 r1 unofficial MOD) // 19 Dec, the initial 2.24
+DRIVER(rfm,223)         //          04/21   Pinball 2000: Revenge From Mars (2.23 unofficial MOD)    // also released as 2.40
+DRIVER(rfm,222)         //          06/20   Pinball 2000: Revenge From Mars (2.22 unofficial MOD)    // also released as 2.30; first on XINA 1.34, which needed the CMOS error log seeded - see the note in p2k.c
+DRIVER(rfm,221)         //          04/20   Pinball 2000: Revenge From Mars (2.21 unofficial MOD)
+DRIVER(rfm,220)         //          10/19   Pinball 2000: Revenge From Mars (2.20 unofficial MOD)    // last to keep 1.91's sound flash; 2.22 goes back to the stock one
+// 2.11 - may not exist at all: reported, but possibly only ever internal, and nothing has been seen of it
+// 2.10 in four builds, and unlike 2.24's three these are not one line: r1-r3 share an im_flsh0 and a sound flash of their own, r4 has a different im_flsh0 and goes back to 1.91's flash the way 2.00 and 2.20/2.21 do. r4 is the actual release
+DRIVER(rfm,210r4)       //          04/19   Pinball 2000: Revenge From Mars (2.10 rev. 4 unofficial MOD) // 11 Apr, the release: adds shaker (driver 19) and knocker (driver 18) hardware control, both optional
+DRIVER(rfm,210r3)       //          04/19   Pinball 2000: Revenge From Mars (2.10 rev. 3 unofficial MOD) // 06 Apr
+DRIVER(rfm,210r2)       //          01/19   Pinball 2000: Revenge From Mars (2.10 rev. 2 unofficial MOD) // 24 Jan; like r1, wedges on the very first boot of an empty CMOS and comes up normally from the second on - see src/p2k/README.md
+DRIVER(rfm,210r1)       //          01/19   Pinball 2000: Revenge From Mars (2.10 rev. 1 unofficial MOD) // 19 Jan; no package of its own - the unprefixed copy left in r2's archive, but its boot data is stamped like any other; wedges on the very first boot of an empty CMOS, see r2 above
+DRIVER(rfm,200)         //          12/18   Pinball 2000: Revenge From Mars (2.00 unofficial MOD)    // myPinballs' first; still XINA 1.22, keeps 1.91's sound flash, and none of 2.10's optional shaker/knocker adjustments yet
+
+// hemtoni's RFM line: all XINA 1.22. In order: 1.90, 1.95, 1.91 (so 1.95 is not the newest despite the number).
+// 1.90 is the one that lasted: its German wording runs through 1.91 and through every myPinballs 2.x. The other two each changed one thing and neither
+// change outlived them - 1.95's re-translation appears in nothing later, and 1.91's added sounds
+// ride in a sound flash that only 2.00 and 2.10 reuse before 2.22 goes back to the stock one.
+
+// Five builds across the three numbers, and only the boot data separates them: every one of these
+// game.roms carries the same Nov 2017 stamp and the same XINA, and all three versions store 1 and 9
+// in the header, so every one of the five displays "1.9". The dates below are the boot data's own
+DRIVER(rfm,195r2)       //          03/18   Pinball 2000: Revenge From Mars (1.95 rev. 2 unofficial MOD) // 29 Mar, the 1.95 that circulated; German re-translation of 1.90, used by nothing after it
+DRIVER(rfm,195r1)       //          03/18   Pinball 2000: Revenge From Mars (1.95 rev. 1 unofficial MOD) // 27 Mar
+DRIVER(rfm,191)         //          05/18   Pinball 2000: Revenge From Mars (1.91 unofficial MOD)        // 30 May, so actually the newest of the three sets; 1.90 plus sounds, in its own sound flash - 2.00 and 2.10 r4 reuse it, 2.22 on do not
+DRIVER(rfm,190r3)       //          03/18   Pinball 2000: Revenge From Mars (1.90 rev. 3 unofficial MOD) // 29 Mar, built 2h47m after 1.95 r2 and sharing its im_flsh0 - the repackaged 1.90, and what this driver used to carry as plain rfm_190
+DRIVER(rfm,190r2)       //          11/17   Pinball 2000: Revenge From Mars (1.90 rev. 2 unofficial MOD) // 22 Nov, a next-day respin
+DRIVER(rfm,190r1)       //          11/17   Pinball 2000: Revenge From Mars (1.90 rev. 1 unofficial MOD) // 21 Nov, the original - drops 1.80's 8MB requirement, English/German only; the text every later version carries
+
+// 1.21 sits here by date rather than by number: a May 2016 build, and the counterpart of the Episode I set named swep1_200h. Both run XINA "1.22 - Tue Jan 06 18:15:21 2016" and nothing else does, and both claimed a version their own line then abandoned
+DRIVER(rfm,121)         //          05/16   Pinball 2000: Revenge From Mars (1.21 unofficial MOD)        // it validates and starts, then drops into the Fatal monitor. Its game.rom has a "GRUB2 Multiboot" header where every other image has a build date, which is the suspect of not booting properly
+
+// semi-official ones:
+DRIVER(rfm,180)         //          04/06   Pinball 2000: Revenge From Mars (1.80 unofficial MOD)        // 23 Apr; the only version needing 8MB SDRAM; Tom Uban, for the EPC 2006 tournament server; also packaged as ..._09222003_..., byte for byte the same four files, which is where the 09/03 date on it comes from
+DRIVER(rfm,170)         //          02/06   Pinball 2000: Revenge From Mars (1.70 unofficial MOD)        // built 06 Feb, revision history dates the release 16 Apr - "This version includes JTS."; still on 1.60's XINA 1.19, so 1.80 is where 1.21 and the 8MB arrive
+
+// official line:
+DRIVER(rfm,160)         //          09/03   Pinball 2000: Revenge From Mars (1.60) // last official one, XINA 1.19
+DRIVER(rfm,150)         //          07/00   Pinball 2000: Revenge From Mars (1.50)
+DRIVER(rfm,140)         //          01/00   Pinball 2000: Revenge From Mars (1.40)
+DRIVER(rfm,130)         //          11/99   Pinball 2000: Revenge From Mars (1.30) // 24 Nov, XINA 1.17, which 1.40 keeps; adds Martian Champion, a jet bumper rule, a ball saver and a victory lap
+DRIVER(rfm,120)         //          06/99   Pinball 2000: Revenge From Mars (1.20) // XINA 1.12, the only shipped set below 1.16
+// 1.10 (21 MAY 1999, XINA 1.11)
+// 1.00 (05 MAY 1999, XINA 1.10)
+// 0.90 (07 APR 1999, XINA 1.06) //!! in my own machine on board?!?
+// The pre-production packages, all on XINA 1.04 or older and all on a sound flash of their own.
+// They come in three pairs - 0.70/0.71, 0.84/0.85, 0.86/0.87 - and a pair is two parallel variants
+// rather than two unique versions, which is why the build stamps do not run with the numbers. Within a
+// pair exactly two functions differ (same in all three pairs): the odd build's
+// award_switch() jump tables carry 36 cases where the even build's carry 34, i.e. its switch enum
+// has two extra members. Shipped 1.20 and 1.60 have 34, so the even builds of these sets are the line that
+// became the official releases. The revision history knows none of the four 0.8x builds nor 0.71 though!
+DRIVER(rfm,087)         //          04/99   Pinball 2000: Revenge From Mars (0.87 prototype) // 06 Apr 11:17, XINA 1.04
+DRIVER(rfm,086)         //          04/99   Pinball 2000: Revenge From Mars (0.86 prototype) // 06 Apr 11:48, XINA 1.04 - built after 0.87
+DRIVER(rfm,085)         //          04/99   Pinball 2000: Revenge From Mars (0.85 prototype) // 05 Apr 11:45, XINA 1.04
+DRIVER(rfm,084)         //          04/99   Pinball 2000: Revenge From Mars (0.84 prototype) // 06 Apr 09:19, XINA 1.04 - built after 0.85
+DRIVER(rfm,080)         //          03/99   Pinball 2000: Revenge From Mars (0.80 prototype/factory, rev. 2(?) board) // the copy in the Prism ROMs, not an update package - the rev. 2 card's loader is dated 04/99
+DRIVER(rfm,071)         //          03/99   Pinball 2000: Revenge From Mars (0.71 prototype) // 28 Mar 17:28, XINA 1.02 - 26 minutes after 0.70, and unknown to the revision history
+DRIVER(rfm,070)         //          03/99   Pinball 2000: Revenge From Mars (0.70 prototype) // 28 Mar 17:02, XINA 1.02; revision history dates the release 26 Mar
+// 0.60 (16 MAR 1999, XINA 1.01) - "Release of Revenge From Mars for samples"
+// 0.50 (07 MAR 1999) - "Release of Revenge From Mars for Waukegan startup", the earliest the changelog records; 0.1 below predates it
+DRIVER(rfm,010)         //          ??/99   Pinball 2000: Revenge From Mars (0.1 prototype/factory, rev. 1 board) // likewise the Prism ROM copy, on the rev. 1 card
+
+// The official Episode I versions and some descriptions below, dumped or not, come out of one place: the 1.66 update
+// package (pin2000_50069_0166_04032022_B_10000000.exe) ships a changelog.txt carrying the whole
+// revision history back to 0.1, with dates, XINA versions and what each one changed. The dates
+// and notes on the comment-only lines are from there.
+//
+// The same package is the only one carrying xina_changelog.txt, the system software's own history:
+// 21 versions, 1.0 (1999) through 1.31 (Jan 2019), each dated and described. Worth knowing about
+// for anything to do with which XINA a set was built against - see src/p2k/README.md, where that
+// decides which versions used to fail to boot. Also records that 1.31 is where the "optional
+// hardware knocker adjustment" was implemented.
+
+// myPinballs'/applejuice's SWEP1 line: branches off Tom Uban's 1.60 rather than
+// hemtoni's 1.6x below - those two unofficial lines seem to be independent, and the symbol-table evidence
+// for that is with the sets in p2k.c. Shaker and knocker arrive with 2.00 and a topper
+// with 2.10, all optional - but they need a cabinet driver control PCB on top of the loom RFM
+// uses, and a pigtail that moves the drives, so they are not on RFM's 18/19. All three are XINA
+// 1.34 or later, same as RFM 2.22 up, and so all three needed the CMOS error log seeded
+DRIVER(swep1,210)       //          10/25   Pinball 2000: Star Wars Episode I (2.10 unofficial MOD) // adds topper hardware control
+DRIVER(swep1,201)       //          05/25   Pinball 2000: Star Wars Episode I (2.01 unofficial MOD)
+DRIVER(swep1,200m)      //          04/25   Pinball 2000: Star Wars Episode I (2.00 mypinballs unofficial MOD) // adds shaker and knocker hardware control. Not to be confused with hemtoni's 2.00 below
+
+// hemtoni's SWEP1 line: carrying on from Tom Uban's 2006 build the way RFM 1.90 does from 1.80. The line runs
+// 1.60 -> 2.00 -> 1.65 -> 1.66, i.e. the numbering went backwards once: the 2016 build called itself 2.00 and nothing was built on that, so 2018 picked up again at 1.65
+DRIVER(swep1,166r2)     //          04/22   Pinball 2000: Star Wars Episode I (1.66 rev. 2 unofficial MOD)  // 03 Apr, XINA 1.31; shaker on driver 5, not myPinballs' 43 - see the driver 5 note in p2k_names.h; changelog dates the version 11/2021, which is r1; labeled as BETA
+DRIVER(swep1,166r1)     //          11/21   Pinball 2000: Star Wars Episode I (1.66 rev. 1 unofficial MOD)  // 14 Nov, the build the changelog dates the version to; shares r2's im_flsh0 and symbol table; features a game breaking scoring bug awarding 4B on the captive ball, most likely fixed in r2
+DRIVER(swep1,165r2)     //          04/21   Pinball 2000: Star Wars Episode I (1.65 rev. 2 unofficial MOD)  // 07 Apr, XINA 1.31 and an im_flsh0 of its own; the changelog's "1.65 (03/21)" - reverted to factory RAM, so it no longer needs the 8 MB 1.60 wants; German translation fixes, ball saver on by default
+DRIVER(swep1,165r1)     //          02/18   Pinball 2000: Star Wars Episode I (1.65 rev. 1 unofficial MOD)  // 21 Feb, still XINA 1.22 and the 1.6x-era im_flsh0; the changelog does not record this build
+DRIVER(swep1,200h)      //          02/16   Pinball 2000: Star Wars Episode I (2.00 hemtoni unofficial MOD) // 26 Feb, XINA 1.22 - the Jan 2016 build, shared only with rfm_121. Not mypinballs' 2.00 above
+
+// semi-official:
+DRIVER(swep1,160)       //          04/06   Pinball 2000: Star Wars Episode I (1.60 unofficial MOD) // 23 Apr, XINA 1.21; Tom Uban's, and the Episode I counterpart of RFM 1.80 - their boot data was built 52 seconds apart
+
+// official line:
+DRIVER(swep1,150)       //          09/03   Pinball 2000: Star Wars Episode I (1.50) // last official one, XINA 1.19, released the same day as RFM 1.60; package says 07/00, but it was built 09/2003 - and the 07252000 and 09222003 packages hold identical files, so the two names are one release
+DRIVER(swep1,140)       //          07/00   Pinball 2000: Star Wars Episode I (1.40)
+// 1.31 (10/99, XINA 1.16) - ramp blocker mode, to stop ramp combos being abused
+DRIVER(swep1,130)       //          09/99   Pinball 2000: Star Wars Episode I (1.30) // 21 Sep, XINA 1.16
+DRIVER(swep1,120)       //          09/99   Pinball 2000: Star Wars Episode I (1.20) // 15 Sep, XINA 1.16, which 1.30 keeps - the two were built five days apart
+DRIVER(swep1,110)       //          09/99   Pinball 2000: Star Wars Episode I (1.10) // 14 Sep, XINA 1.15; first official update
+// 1.05 (09/99, XINA 1.15) - local, to become 1.1
+DRIVER(swep1,100)       //          07/99   Pinball 2000: Star Wars Episode I (1.00) // 19 Jul, XINA 1.13; first production release
+// 0.51 (07/99, XINA 1.12)
+// 0.50 (07/99, XINA 1.12)
+// 0.43 (07/99, XINA 1.12) - an owner reports it on a developer flash PRISM card; no package or extraction seen
+// 0.42 (07/99, XINA 1.12)
+// 0.41 (06/99, XINA 1.12)
+DRIVER(swep1,040)       //          06/99   Pinball 2000: Star Wars Episode I (0.40 prototype/factory) // the Prism ROM copy, as above - and the changelog calls 0.40 "the big ROM masking, the offical masked version", so what is in those mask ROMs is exactly this
+// 0.35 (06/99, XINA 1.11)
+// 0.34 (05/99, XINA 1.11)
+// 0.33 (05/99, XINA 1.11)
+// 0.32 (05/99, XINA 1.10)
+// 0.31 (05/99, XINA 1.10)
+// 0.3  (05/99, XINA 1.02) - the other masking: "the version where image roms 2 and 3 were masked"; these might match the 0.4 mask though, who knows
+// 0.2  (??/99, XINA 1.02) - Denver show
+// 0.1  (03/99, XINA 1.02) - a cleaned up version of what was demo'd for Lucas
+#endif
+
+#ifdef PIN2K_SOUND_TEST
+DRIVERNV(pin2ksnd)      //                  Pinball 2000 PinMAME DCS2 sound board test harness, RFM  (see docs/pin2k_sound.md)
+DRIVERNV(pin2ksw1)      //                  Pinball 2000 PinMAME DCS2 sound board test harness, SWEP1
+#endif
 
 // ------------------
 // ZACCARIA GAMES

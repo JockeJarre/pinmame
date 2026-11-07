@@ -84,3 +84,70 @@ Cirqus Voltaire (CV)
 On startup, CV will test the ringmaster and it will not go into attract mode
 if the test fails. One way to bypass it, is to disable the ringmaster
 (adjustment A2 30).
+
+Io Moon (iomoon)
+----------------
+Sleic's 1996 machine.  Three balls.  The simulator keys are:
+
+  +-    Left/Right Shooter (the manual's Expulsor 1/2)
+  +R    Ramp 1 / Ramp 2
+  +H    Hole 1 / Hole 2 (Tragabolas 1/2)
+  +B    Bull Eye 1 / Bull Eye 2 (Diana 1/2)
+  WEDFG Bumpers 1-5
+  J     Jupiter entrance
+  I     Inner Bank (Fondo Bancada)
+  O     Lane 10, the orbit shot
+  K     Lane 11 (Autodrop)
+  ZXCVN Drop targets Bank A-E
+  YUAS  Lanes 1-4
+  MLDot Lanes 5-7   (M, L, comma)
+  ./    Lanes 8-9   (period, slash)
+  Q     Drain
+  Space Plunge the served ball (the cabinet has a manual shooter rod)
+  Down  Follow the next ball -- press it once after each drain, or the shot keys
+        go on being refused because the cursor still points at the drained ball
+
+Del switches between these keys and the per-contact matrix test keys, which is
+how the service menu's CONTACTOS test is driven; the matrix keys are listed in
+sleic.c.  Those keys assign the whole matrix, so a Del round-trip also clears the
+drop targets.
+
+The drop targets otherwise only rise on ball start: the sim models the manual's
+rule that the bank resets at ball start and not again mid-ball, since the reset
+coil is on the driver expansion board, which no Z80 port is seen driving --
+the real drive path is open (F17). So a mode that needs the bank cannot be
+completed if targets were already down.
+
+Hole 2 and Jupiter's two ball locks free the ball themselves after five seconds.
+Hole 2 has no kicker at all -- the manual's coil list names one for Tragabolas 1
+only -- and Jupiter's release coil is not seen firing in ordinary play, which
+matches manual 3.3.7: without every ORBITS lamp lit Jupiter holds no ball.  So a
+ball passing straight through either of them is the ordinary case, not a fault.
+Hole 1 is different: it has a real coil and waits for it.
+
+4x4 (fourx4)
+------------
+Atari's 1982-83 prototype; two machines were built and neither is in general
+circulation, so the simulator is preliminary.  Three balls.  The keys are:
+
+  Q     Drain ball
+  WER   Upper / Mid / Lower pop bumper
+  ASDF  Left drop target bank 1-4 (switches $14-$17)
+  ZXCV  Right drop target bank 1-4 (switches $1C-$1F)
+  TYUI  Lanes 1-4 (switches $18-$1B), along the bottom of the left grid
+  GJ    Left / right side standing targets (switches $25, $26)
+  BNM   Coil targets (switches $05-$07), each firing its own coil
+  KLP   Right grid row (switches $20-$22)
+  H     Right grid 4 (switch $23)
+  O     Outhole
+  1-8   (keypad) the eight-switch group at $0C-$13
+
+The playfield is only partly known.  Switch and solenoid names come from the
+pencilled playfield diagram, whose SW and SOL numbers are the ones the game
+dispatches on; lamp numbers are the ROM's own output numbering, which is
+blitIndex*8 + bit.  The three pop bumpers, both drop target banks, the two
+side standing target banks and the cabinet switches are named; the spinner,
+the inlanes and the outlanes are not.
+
+Sound is two POKEYs.  The high-pass filters and the two-tone mode are
+unreachable in this game and are not modelled.

@@ -12,14 +12,13 @@
 / 6                -2 59 60    61    62        107   117
 / 7 Slam           -1 69 70    71    72        108   118
 /
-/ GameOn    relay is solenoid 10
-/ Tilt (GI) relay is solenoid 11
+/ Solenoid 10: flipper enable (GameOn relay, and not tilted on S80 & S80A)
+/ Solenoid 11: Tilt relay (lamp 1), whose normally closed contact feeds the playfield GI, like GTS3's solenoid 31
 ************************************************************************************************/
 #include <stdarg.h>
 #include "driver.h"
 #include "vidhrdw/generic.h"
 #include "cpu/m6502/m6502.h"
-#include "cpu/i86/i86.h"
 #include "machine/6532riot.h"
 #include "machine/pic8259.h"
 #include "core.h"
@@ -30,6 +29,7 @@
 #if defined(PINMAME) && defined(LISY_SUPPORT)
  #include "lisy/lisy80.h"
 #endif /* PINMAME && LISY_SUPPORT */
+// caveman has a #include "cpu/i86/i86.h" below
 
 #define GTS80_SOLSMOOTH       4 /* Smooth the Solenoids over this number of VBLANKS */
 #define GTS80_DISPLAYSMOOTH   2 /* Smooth the display over this number of VBLANKS */
@@ -89,14 +89,12 @@ static INTERRUPT_GEN(GTS80_vblank) {
   /*-- lamps are not strobed so no need to smooth --*/
   /*-- solenoids --*/
   if ((GTS80locals.vblankCount % GTS80_SOLSMOOTH) == 0) {
-    // Lamp 0 controls GameOn relay (map as sol 10)
-    // Lamp 1 controls Tilt relay (map as sol 11) for S80 & S80A
-    gameOn = (coreGlobals.lampMatrix[0] & 0x03);
-    if (core_gameData->gen & (GEN_GTS80 | GEN_GTS80A))
-      gameOn &= (gameOn ^ 0x06)>>1; // combine tilt & GameOn
-    else
-      gameOn &= 1; // only GameOn
-    coreGlobals.solenoids = GTS80locals.solenoids | (gameOn << 9);
+    // Lamp 0 controls GameOn relay (map as sol 10), lamp 1 controls Tilt relay (map as sol 11), on all generations
+    // Flippers are enabled by GameOn and not Tilt on S80 & S80A, by GameOn only on S80B (whose games also use the Tilt relay for GI effects, e.g. Rock, Raven)
+    const UINT8 relays = coreGlobals.lampMatrix[0] & 0x03; // bit 0: GameOn relay, bit 1: Tilt relay
+    gameOn = (core_gameData->gen & (GEN_GTS80 | GEN_GTS80A)) ? (relays == 0x01) : (relays & 0x01);
+    coreGlobals.solenoids = GTS80locals.solenoids | (gameOn << 9) | ((UINT32)(relays & 0x02) << 9);
+    core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 8, gameOn << 1, 0x02); // Also as output, for physical solenoids
     GTS80locals.solenoids = coreGlobals.pulsedSolState;
     coreGlobals.pulsedSolState = 0;
   }
@@ -116,9 +114,12 @@ static int GTS80_sw2m(int no) {
 }
 
 static int GTS80_m2sw(int col, int row) {
-  if (col > 9 || (col == 9 && row >= 6)) return col*8+row;
-  else if (col < 1)                      return -9 + row;
-  else                                   return row*10+col-1;
+  if (col == 0 && row == 0)
+    return -8;                    // matches sw2m(-8) == 0
+  else if (col <= 9)
+    return row * 10 + col - 1;    // inverse of the 0<=no<96 branch
+  else
+    return col * 10 + row + 1;    // inverse of the no>=96 branch
 }
 static int GTS80_lamp2m(int no)           { return no+8; }
 static int GTS80_m2lamp(int col, int row) { return (col-1)*8+row; }
@@ -399,8 +400,13 @@ static WRITE_HANDLER(riot6532_2b_w) {
   if (column >= 0 && column <= 11) {
      if ((column & 1) == 0) { // 0, 2, 4, 6, 8, 10
         core_write_masked_pwm_output_8b(CORE_MODOUT_LAMP0 + (column >> 1) * 8, data, 0x0f);
-        if (column == 0)
-           core_write_masked_pwm_output_8b(CORE_MODOUT_GI0, data, 0x01); // Duplicate lamp 0 to GI string as it drives the Tilt relay that in turn drives the main GI
+        // Duplicate lamp 1 (Tilt relay) to GI string: the playfield GI goes through the relay's normally closed contact
+        // TODO so does the +6V DC of the controlled playfield lamps (Panthera, Haunted House, Raven schematics): they are off while
+        // the Tilt relay is on (tilt, S80B GI effects), whatever their driver outputs. Not emulated
+        if (column == 0) {
+           core_write_masked_pwm_output_8b(CORE_MODOUT_GI0, data >> 1, 0x01);
+           core_write_masked_pwm_output_8b(CORE_MODOUT_SOL0 + 8, data << 1, 0x04); // Also as solenoid 11 (Tilt relay)
+        }
      }
      else { // 1, 3, 5, 7, 9, 11
         core_write_masked_pwm_output_8b(CORE_MODOUT_LAMP0 + (column >> 1) * 8, data << 4, 0xf0);
@@ -624,7 +630,7 @@ static MACHINE_INIT(gts80) {
   if (core_gameData->hw.display & GTS80_DISPALPHA)
   {
      coreGlobals.nAlphaSegs = 2 * 20 * 16;
-     core_set_pwm_output_type(CORE_MODOUT_SEG0, coreGlobals.nAlphaSegs, CORE_MODOUT_NONE); // No eye flicker fusion, just the direct PWM duty ratio from the display driver
+     core_set_pwm_output_driver_value(CORE_MODOUT_SEG0, coreGlobals.nAlphaSegs); // No eye flicker fusion, just the direct PWM duty ratio from the display driver
   }
   else
   {
@@ -635,9 +641,9 @@ static MACHINE_INIT(gts80) {
   while (rootDrv->clone_of && (rootDrv->clone_of->flags & NOT_A_DRIVER) == 0)
      rootDrv = rootDrv->clone_of;
   const char* const gn = rootDrv->name;
-  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 0, 1, CORE_MODOUT_SOL_2_STATE); // GameOver relay (Q)
-  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 1, 1, CORE_MODOUT_SOL_2_STATE); // Tilt relay (T)
-  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 4, 1, CORE_MODOUT_SOL_2_STATE); // Sound 16
+  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 0, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // GameOver relay (Q)
+  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 1, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Tilt relay (T)
+  core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 4, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Sound 16
   if (strncasecmp(gn, "amazonh2", 8) == 0 || strncasecmp(gn, "amazn2fp", 8) == 0) { // Amazon Hunt II
      // no special wiring
   }
@@ -646,8 +652,8 @@ static MACHINE_INIT(gts80) {
      core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 52, 7, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Flashers triggered simultaneously with solenoids
   }
   else if (strncasecmp(gn, "bigh", 4) == 0) { // Big House
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 13, 1, CORE_MODOUT_SOL_2_STATE); // Auger motor relay (A)
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 14, 1, CORE_MODOUT_SOL_2_STATE); // Ball Gate Relay
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 13, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Auger motor relay (A)
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 14, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Ball Gate Relay
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 3 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Left top flashers (#67 with 8 Ohms resistor under +24DC with a 0.1-0.3 voltage drop of the driver)
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 4 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Right top flashers (#67 with 8 Ohms resistor under +24DC with a 0.1-0.3 voltage drop of the driver)
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 7 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Right side flashers (#67 with 8 Ohms resistor under +24DC with a 0.1-0.3 voltage drop of the driver)
@@ -657,9 +663,9 @@ static MACHINE_INIT(gts80) {
      // no special wiring
   }
   else if (strncasecmp(gn, "genes", 5) == 0) { // Genesis
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 12, 1, CORE_MODOUT_SOL_2_STATE); // Motor relay
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 13, 1, CORE_MODOUT_SOL_2_STATE); // Aux.Lamp relay
-     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 14, 1, CORE_MODOUT_SOL_2_STATE); // Ball Release
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 12, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Motor relay
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 13, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Aux.Lamp relay
+     core_set_pwm_output_type(CORE_MODOUT_LAMP0 + 14, 1, CORE_MODOUT_LEGACY_SOL_2_STATE); // Ball Release
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 4 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Left Ramp flashers (2 #67 with 4 Ohms resistor under +24DC with a 0.1-0.3 voltage drop in the 2N5879 driver)
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 7 - 1, 1, CORE_MODOUT_BULB_89_20V_DC_GTS3); // Left Ramp flashers (2 #67 with 4 Ohms resistor under +24DC with a 0.1-0.3 voltage drop in the 2N5879 driver)
   }
@@ -744,8 +750,8 @@ MACHINE_DRIVER_END
 
 static MACHINE_DRIVER_START(gts80b_ns)
   MDRV_IMPORT_FROM(gts80)
-  MDRV_SCREEN_SIZE(320+CORE_SCREENX_INC, 200)
-  MDRV_VISIBLE_AREA(0, 319+CORE_SCREENX_INC, 0, 199)
+  MDRV_SCREEN_SIZE(320, 200)
+  MDRV_VISIBLE_AREA(0, 319, 0, 199)
 MACHINE_DRIVER_END
 
 MACHINE_DRIVER_START(gts80b)
@@ -815,6 +821,9 @@ MACHINE_DRIVER_END
         Setting either one to off sets english text.
         (Didn't find the setting for french text yet)
 -----------------------------------------------------------------------*/
+
+#include "cpu/i86/i86.h"
+
 static VIDEO_START(gts80vid) {
   tmpbitmap = auto_bitmap_alloc(Machine->drv->screen_width,Machine->drv->screen_height);
   return (tmpbitmap == 0);

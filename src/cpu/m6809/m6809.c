@@ -190,6 +190,7 @@ static PAIR ea;         /* effective address */
 	if( m6809.irq_state[M6809_FIRQ_LINE]!=CLEAR_LINE && !(CC & CC_IF) ) \
 	{																	\
 		/* fast IRQ */													\
+		DEBUG_PUSH_INT(PC, RM16(0xfff6), (m6809.int_state & M6809_CWAI) ? 12 : 0); \
 		/* HJB 990225: state already saved by CWAI? */					\
 		if( m6809.int_state & M6809_CWAI )								\
 		{																\
@@ -212,6 +213,7 @@ static PAIR ea;         /* effective address */
 	if( m6809.irq_state[M6809_IRQ_LINE]!=CLEAR_LINE && !(CC & CC_II) )	\
 	{																	\
 		/* standard IRQ */												\
+		DEBUG_PUSH_INT(PC, RM16(0xfff8), (m6809.int_state & M6809_CWAI) ? 12 : 0); \
 		/* HJB 990225: state already saved by CWAI? */					\
 		if( m6809.int_state & M6809_CWAI )								\
 		{																\
@@ -482,7 +484,14 @@ void m6809_set_reg(int regnum, unsigned val)
 	switch( regnum )
 	{
 		case REG_PC:
-		case M6809_PC: PC = val; CHANGE_PC; break;
+		case M6809_PC:
+			PC = val;
+			CHANGE_PC;
+#ifdef REMOTE_DEBUG
+			/* Wake up CPU from SYNC/CWAI wait states so debugger can force execution from new PC */
+			m6809.int_state &= ~(M6809_CWAI | M6809_SYNC);
+#endif
+			break;
 		case REG_SP:
 		case M6809_S: S = val; break;
 		case M6809_CC: CC = val; CHECK_IRQ_LINES; break;
@@ -530,6 +539,7 @@ void m6809_init(void)
 
 void m6809_reset(void *param)
 {
+	DEBUG_RESET_CALLSTACK();
 	m6809.int_state = 0;
 	m6809.nmi_state = CLEAR_LINE;
 	m6809.irq_state[0] = CLEAR_LINE;
@@ -566,6 +576,7 @@ void m6809_set_irq_line(int irqline, int state)
 	    if( !(m6809.int_state & M6809_LDS) ) return;
 
 	    m6809.int_state &= ~M6809_SYNC;
+		DEBUG_PUSH_INT(PC, RM16(0xfffc), (m6809.int_state & M6809_CWAI) ? 12 : 0);
 		/* HJB 990225: state already saved by CWAI? */
 		if( m6809.int_state & M6809_CWAI )
 		{

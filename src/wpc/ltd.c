@@ -140,7 +140,9 @@ static DISCRETE_SOUND_START(ltd3_discInt)
 	DISCRETE_MULTADD(NODE_03,1,NODE_01,10,200)
 	DISCRETE_TRIANGLEWAVE(NODE_04,NODE_02,NODE_03,20000,10000,0)
 	DISCRETE_GAIN(NODE_05,NODE_04,12)
-	DISCRETE_OUTPUT(NODE_05,50)
+	/* Unipolar (a triangle of BIAS 10000 x12, +120000 of DC even in silence: a disabled wave node outputs its BIAS),
+	   hence _AC to correct/center around 0. The remaining +-120000 is 3.7x 16bit full scale, so the final mix clips - gain and frequencies are guesses */
+	DISCRETE_OUTPUT_AC(NODE_05,50)
 DISCRETE_SOUND_END
 
 static void snd_stop(int param) {
@@ -364,7 +366,7 @@ static WRITE_HANDLER(peri4_w) {
                  if ((data & 0xf0) != 0xf0) locals.solenoids |= 0x4000 << (data >> 4);
                  coreGlobals.solenoids = locals.solenoids;
                } else
-                 locals.solBank = core_BitColToNum(data);
+                 locals.solBank = core_LowestBitColToNum(data); // 0xff at power-up
                break;
       case  2: locals.solenoids |= (data >> 4) << (locals.solBank * 4);
                locals.solenoids2 |= (data & 0x0f) << 4;

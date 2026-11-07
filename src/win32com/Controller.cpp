@@ -45,7 +45,7 @@ extern UINT32 g_raw_dmdy;
 extern UINT8  g_needs_DMD_update;
 extern int g_cpu_affinity_mask;
 
-extern char g_fShowWinDMD;
+extern int g_fShowWinDMD;
 extern char g_szGameName[256];
 
 extern UINT8 g_VPM_ignore_pwm_segments_update;
@@ -580,6 +580,27 @@ STDMETHODIMP CController::get_NVRAM(VARIANT *pVal)
 		return S_FALSE;
 }
 
+// Creates a rows x cols array of VT_I4 values, filled in place: a SafeArrayPutElement per element (lock, bounds check, copy)
+// can add up for the Changed* properties polled on each script update. Column major: (row,col) is at row + col * rows
+template <class F> static SAFEARRAY* CreateI4Table(const int rows, const int cols, F value)
+{
+	SAFEARRAYBOUND Bounds[] = { { (ULONG)rows, 0 }, { (ULONG)cols, 0 } };
+	SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
+	VARIANT *pData;
+	if (psa && SUCCEEDED(SafeArrayAccessData(psa, (void**)&pData)))
+	{
+		for (int col = 0; col < cols; col++)
+			for (int row = 0; row < rows; row++)
+			{
+				VARIANT &v = pData[row + col * rows];
+				v.vt = VT_I4;
+				v.lVal = value(row, col);
+			}
+		SafeArrayUnaccessData(psa);
+	}
+	return psa;
+}
+
 static UINT8 oldNVRAM[CORE_MAXNVRAM];
 static char* oldNVRAMname = 0;
 static vp_tChgNVRAMs chgNVRAMs; // stack overflow when put into get_ChangedNVRAM??
@@ -662,29 +683,10 @@ STDMETHODIMP CController::get_ChangedNVRAM(VARIANT *pVal)
 		pVal->vt = 0; return S_OK;
 	}
 
-	/*-- Create array --*/
-	SAFEARRAYBOUND Bounds[] = { { (ULONG)uCount, 0 }, { 3, 0 } };
-	SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-	long ix[2];
-	VARIANT varValue;
-
-	varValue.vt = VT_I4;
-
-	/*-- add changed locations to array --*/
-	for (ix[0] = 0; ix[0] < (long)uCount; ix[0]++) {
-		ix[1] = 0;
-		varValue.lVal = chgNVRAMs[ix[0]].nvramNo;
-		SafeArrayPutElement(psa, ix, &varValue);
-		ix[1] = 1; // NVRAM value
-		varValue.lVal = chgNVRAMs[ix[0]].currStat;
-		SafeArrayPutElement(psa, ix, &varValue);
-		ix[1] = 2; // Old NVRAM value
-		varValue.lVal = chgNVRAMs[ix[0]].oldStat;
-		SafeArrayPutElement(psa, ix, &varValue);
-	}
-
+	/*-- Create array of changed locations: number, value, old value --*/
 	pVal->vt = VT_ARRAY | VT_VARIANT;
-	pVal->parray = psa;
+	pVal->parray = CreateI4Table((int)uCount, 3, [](int row, int col) -> LONG {
+		return col == 0 ? chgNVRAMs[row].nvramNo : col == 1 ? chgNVRAMs[row].currStat : chgNVRAMs[row].oldStat; });
 
 	return S_OK;
 }
@@ -800,6 +802,14 @@ STDMETHODIMP CController::get_updateDmdPixels(int **buf, int width, int height, 
 			return S_OK;
 		}
 
+		/* A VIDEO_RGB_DIRECT screen holds packed colour, not palette indices, and
+		   palette_get_color() would read a 15 bpp value as an index up to 0x7fff - far past
+		   the palette. Baby Pac-Man and Granny & the Gators, the other games reaching a
+		   frontend through this call, are paletted and keep the lookup; Pinball 2000's
+		   MediaGX frame buffer is not and gets unpacked by depth. Same split as
+		   UpdatePinmameDisplayBitmap() in src/libpinmame/libpinmame.cpp */
+		const bool direct = (Machine->drv->video_attributes & VIDEO_RGB_DIRECT) != 0;
+
 		float *dst = reinterpret_cast<float*>(buf);
 		if (btm->depth == 8)
 		{
@@ -825,7 +835,14 @@ STDMETHODIMP CController::get_updateDmdPixels(int **buf, int width, int height, 
 				for(int i=current_display_ptr->game_visible_area.min_x;i<=current_display_ptr->game_visible_area.max_x;i++)
 				{
 					UINT8 r,g,b;
-					palette_get_color((*src++),&r,&g,&b);
+					const UINT16 c = *src++;
+					if (direct)
+					{
+						if (btm->depth == 16) { r = ((c >> 11) & 0x1f) << 3; g = ((c >> 5) & 0x3f) << 2; b = (c & 0x1f) << 3; }
+						else                  { r = ((c >> 10) & 0x1f) << 3; g = ((c >> 5) & 0x1f) << 3; b = (c & 0x1f) << 3; }
+					}
+					else
+						palette_get_color(c,&r,&g,&b);
 					*(dst++) = (float)r*(float)(1.0/255.0);
 					*(dst++) = (float)g*(float)(1.0/255.0);
 					*(dst++) = (float)b*(float)(1.0/255.0);
@@ -841,7 +858,10 @@ STDMETHODIMP CController::get_updateDmdPixels(int **buf, int width, int height, 
 				for(int i=current_display_ptr->game_visible_area.min_x;i<=current_display_ptr->game_visible_area.max_x;i++)
 				{
 					UINT8 r,g,b;
-					palette_get_color((*src++),&r,&g,&b);
+					const UINT32 c = *src++;
+					if (direct) { r = (c >> 16) & 0xff; g = (c >> 8) & 0xff; b = c & 0xff; }
+					else
+						palette_get_color(c,&r,&g,&b);
 					*(dst++) = (float)r*(float)(1.0/255.0);
 					*(dst++) = (float)g*(float)(1.0/255.0);
 					*(dst++) = (float)b*(float)(1.0/255.0);
@@ -1101,11 +1121,15 @@ STDMETHODIMP CController::put_Switches(VARIANT newVal)
 		return S_OK; // nothing to do...
 
 	VARIANT varValue;
+	VariantInit(&varValue);
 	for (long i=lBound; i<=uBound; i++) {
-		SafeArrayGetElement(psa, &i, &varValue);
-		// if this fails, return, we currently only support VARIANTs with standard values
-		if ( VariantChangeType(&varValue, &varValue, 0, VT_I4)!=S_OK )
+		if ( SafeArrayGetElement(psa, &i, &varValue)!=S_OK )
 			return S_FALSE;
+		// if this fails, return, we currently only support VARIANTs with standard values
+		if ( VariantChangeType(&varValue, &varValue, 0, VT_I4)!=S_OK ) {
+			VariantClear(&varValue); // the element copy (e.g. a string) is still owned here
+			return S_FALSE;
+		}
 		vp_putSwitch(i, varValue.lVal);
 	}
 
@@ -1320,26 +1344,9 @@ STDMETHODIMP CController::get_ChangedLamps(VARIANT *pVal)
   if (uCount == 0)
     { pVal->vt = 0; return S_OK; }
 
-  /*-- Create array --*/
-  SAFEARRAYBOUND Bounds[] = {{(ULONG)uCount,0}, {2,0}};
-  SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-  long ix[2];
-  VARIANT varValue;
-
-  varValue.vt = VT_I4;
-
-  /*-- add changed lamps to array --*/
-  for (ix[0] = 0; ix[0] < uCount; ix[0]++) {
-    ix[1] = 0;
-    varValue.lVal = chgLamps[ix[0]].lampNo;
-    SafeArrayPutElement(psa, ix, &varValue);
-    ix[1] = 1; // Lamp value
-    varValue.lVal = chgLamps[ix[0]].currStat;
-    SafeArrayPutElement(psa, ix, &varValue);
-  }
-
+  /*-- Create array of changed lamps: number, value --*/
   pVal->vt = VT_ARRAY | VT_VARIANT;
-  pVal->parray = psa;
+  pVal->parray = CreateI4Table(uCount, 2, [&chgLamps](int row, int col) -> LONG { return col == 0 ? chgLamps[row].lampNo : chgLamps[row].currStat; });
 
   return S_OK;
 }
@@ -1364,29 +1371,10 @@ STDMETHODIMP CController::get_ChangedLEDs(int nHigh, int nLow, int nnHigh, int n
   if (uCount == 0)
     { pVal->vt = 0; return S_OK; }
 
-  /*-- Create array --*/
-  SAFEARRAYBOUND Bounds[] = {{(ULONG)uCount,0}, {3,0}};
-  SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-  long ix[2];
-  VARIANT varValue;
-
-  varValue.vt = VT_I4;
-
-  /*-- add changed lamps to array --*/
-  for (ix[0] = 0; ix[0] < uCount; ix[0]++) {
-    ix[1] = 0;
-    varValue.lVal = chgLED[ix[0]].ledNo;
-    SafeArrayPutElement(psa, ix, &varValue);
-    ix[1] = 1; // Changed segments
-    varValue.lVal = chgLED[ix[0]].chgSeg;
-    SafeArrayPutElement(psa, ix, &varValue);
-    ix[1] = 2; // Current value
-    varValue.lVal = chgLED[ix[0]].currStat;
-    SafeArrayPutElement(psa, ix, &varValue);
-  }
-
+  /*-- Create array of changed LEDs: number, changed segments, current value --*/
   pVal->vt = VT_ARRAY | VT_VARIANT;
-  pVal->parray = psa;
+  pVal->parray = CreateI4Table(uCount, 3, [&chgLED](int row, int col) -> LONG {
+    return col == 0 ? chgLED[row].ledNo : col == 1 ? chgLED[row].chgSeg : chgLED[row].currStat; });
 
   return S_OK;
 }
@@ -1533,24 +1521,9 @@ STDMETHODIMP CController::get_ChangedGIStrings(VARIANT *pVal) {
   if (uCount == 0)
     { pVal->vt = 0; return S_OK; }
 
-  /*-- Create array --*/
-  SAFEARRAYBOUND Bounds[] = {{(ULONG)uCount,0}, {2,0}};
-  SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-  long ix[2];
-  VARIANT GIState;
-  GIState.vt = VT_I4;
-
-  /*-- add changed to array --*/
-  for (ix[0] = 0; ix[0] < uCount; ix[0]++) {
-    ix[1] = 0; // GI Number
-    GIState.lVal = chgGI[ix[0]].giNo;
-    SafeArrayPutElement(psa, ix, &GIState);
-    ix[1] = 1; // GI status
-    GIState.lVal = chgGI[ix[0]].currStat;
-    SafeArrayPutElement(psa, ix, &GIState);
-  }
+  /*-- Create array of changed GI strings: number, status --*/
   pVal->vt = VT_ARRAY | VT_VARIANT;
-  pVal->parray = psa;
+  pVal->parray = CreateI4Table(uCount, 2, [&chgGI](int row, int col) -> LONG { return col == 0 ? chgGI[row].giNo : chgGI[row].currStat; });
 
   return S_OK;
 }
@@ -1579,25 +1552,9 @@ STDMETHODIMP CController::get_ChangedSolenoids(VARIANT *pVal)
   if (uCount == 0)
 	{ pVal->vt = 0; return S_OK; }
 
-  /*-- Create array --*/
-  SAFEARRAYBOUND Bounds[] = {{(ULONG)uCount,0}, {2,0}};
-  SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-  long ix[2];
-  VARIANT varValue;
-  varValue.vt = VT_I4;
-
-  /*-- add changed solenoids to the array --*/
-  for (ix[0] = 0; ix[0] < uCount; ix[0]++) {
-	ix[1] = 0; // Solenoid number
-	varValue.lVal = chgSol[ix[0]].solNo;
-	SafeArrayPutElement(psa, ix, &varValue);
-
-	ix[1] = 1; // Solenoid status
-	varValue.lVal = chgSol[ix[0]].currStat;
-	SafeArrayPutElement(psa, ix, &varValue);
-  }
+  /*-- Create array of changed solenoids: number, status --*/
   pVal->vt = VT_ARRAY | VT_VARIANT;
-  pVal->parray = psa;
+  pVal->parray = CreateI4Table(uCount, 2, [&chgSol](int row, int col) -> LONG { return col == 0 ? chgSol[row].solNo : chgSol[row].currStat; });
 
   return S_OK;
 }
@@ -1861,24 +1818,9 @@ STDMETHODIMP CController::get_NewSoundCommands(VARIANT *pVal)
   if (uCount == 0)
     { pVal->vt = 0; return S_OK; }
 
-  /*-- Create array --*/
-  SAFEARRAYBOUND Bounds[] = {{(ULONG)uCount,0}, {2,0}};
-  SAFEARRAY *psa = SafeArrayCreate(VT_VARIANT, 2, Bounds);
-  long ix[2];
-  VARIANT SoundsState;
-  SoundsState.vt = VT_I4;
-
-  /*-- add changed to array --*/
-  for (ix[0] = 0; ix[0] < uCount; ix[0]++) {
-    ix[1] = 0; // Sound Command Number
-    SoundsState.lVal = chgSound[ix[0]].sndNo;
-    SafeArrayPutElement(psa, ix, &SoundsState);
-    ix[1] = 1; // Not used for the moment!
-    SoundsState.lVal = 0;
-    SafeArrayPutElement(psa, ix, &SoundsState);
-  }
+  /*-- Create array of new sound commands: number, unused (0) --*/
   pVal->vt = VT_ARRAY | VT_VARIANT;
-  pVal->parray = psa;
+  pVal->parray = CreateI4Table(uCount, 2, [&chgSound](int row, int col) -> LONG { return col == 0 ? chgSound[row].sndNo : 0; });
 
   return S_OK;
 }

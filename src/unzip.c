@@ -105,6 +105,8 @@ static int ecd_find_sig (char *buffer, int buflen, int *offset)
    out:
      zip->ecd, zip->ecd_length ecd data
 */
+#define ECD_MAX (22 + 0xFFFF) /* the end of central dir record with the longest comment */
+
 static int ecd_read(ZIP* zip) {
 	char* buf;
 	int buf_length = 1024; /* initial buffer length */
@@ -113,7 +115,7 @@ static int ecd_read(ZIP* zip) {
 		int offset;
 
 		if (buf_length > zip->length)
-			buf_length = zip->length;
+			buf_length = (int)zip->length;
 
 		if (osd_fseek(zip->fp, zip->length - buf_length, SEEK_SET) != 0) {
 			return -1;
@@ -147,9 +149,9 @@ static int ecd_read(ZIP* zip) {
 
 		free(buf);
 
-		if (buf_length < zip->length) {
+		if (buf_length < zip->length && buf_length < ECD_MAX) {
 			/* double buffer */
-			buf_length = 2*buf_length;
+			buf_length = 2*buf_length < ECD_MAX ? 2*buf_length : ECD_MAX;
 
 			logerror("Retry reading of zip ecd for %d bytes\n",buf_length);
 
@@ -441,9 +443,8 @@ void rewindzip(ZIP* zip) {
 	==0 success
 	<0 error
 */
-int seekcompresszip(ZIP* zip, struct zipent* ent) {
+INT64 offsetcompresszip(ZIP* zip, struct zipent* ent) {
 	char buf[ZIPNAME];
-	long offset;
 
 	if (!zip->fp) {
 		if (!revivezip(zip))
@@ -460,18 +461,32 @@ int seekcompresszip(ZIP* zip, struct zipent* ent) {
 		return -1;
 	}
 
-	{
-		UINT16 filename_length = read_word (buf+ZIPFNLN);
-		UINT16 extra_field_length = read_word (buf+ZIPXTRALN);
+	/* the data follows the local header, its file name and extra field */
+	return (INT64)ent->offset_lcl_hdr_frm_frst_disk + ZIPNAME + read_word (buf+ZIPFNLN) + read_word (buf+ZIPXTRALN);
+}
 
-		/* calculate offset to data and osd_fseek() there */
-		offset = ent->offset_lcl_hdr_frm_frst_disk + ZIPNAME + filename_length + extra_field_length;
+int seekcompresszip(ZIP* zip, struct zipent* ent) {
+	const INT64 offset = offsetcompresszip(zip, ent);
+	if (offset < 0)
+		return -1;
 
-		if (osd_fseek(zip->fp, offset, SEEK_SET) != 0) {
-			errormsg ("Seeking to compressed data", ERROR_CORRUPT, zip->zip);
+	if (osd_fseek(zip->fp, offset, SEEK_SET) != 0) {
+		errormsg ("Seeking to compressed data", ERROR_CORRUPT, zip->zip);
+		return -1;
+	}
+
+	return 0;
+}
+
+int readzipat(ZIP* zip, INT64 offset, char* data, UINT32 length) {
+	if (!zip->fp) {
+		if (!revivezip(zip))
 			return -1;
-		}
+	}
 
+	if (osd_fseek(zip->fp, offset, SEEK_SET) != 0 || osd_fread(zip->fp, data, length) != length) {
+		errormsg ("Reading data", ERROR_CORRUPT, zip->zip);
+		return -1;
 	}
 
 	return 0;
@@ -880,4 +895,52 @@ int /* error */ checksum_zipped_file (int pathtype, int pathindex, const char *z
 
 	cache_suspendzip(zip);
 	return -1;
+}
+
+/*	Where the zip stores filename uncompressed, for mapping its data straight from the zip file:
+	by name, else by sum when it is not 0 (load by CRC). The directory is read afresh, not from
+	the cache, which can be from before the zip was rewritten, and the entry's local header must
+	agree with it. *offset is where the data starts in the zip file */
+int /* error */ locate_stored_zipped_file (int pathtype, int pathindex, const char *zipfile, const char *filename, UINT64 *offset, unsigned int *length, unsigned int *sum) {
+	ZIP* zip;
+	struct zipent* ent;
+	char head[ZIPNAME];
+	char* name = NULL;
+	int err = -1;
+
+	zip = openzip(pathtype, pathindex, zipfile);
+	if (!zip)
+		return -1;
+
+	while ((ent = readzip(zip)) != NULL && !equal_filename(ent->name, filename))
+		;
+	if (!ent && *sum) {
+		rewindzip(zip);
+		while ((ent = readzip(zip)) != NULL && ent->crc32 != *sum)
+			;
+	}
+
+	if (ent && ent->compression_method == 0 && ent->compressed_size == ent->uncompressed_size &&
+	    revivezip(zip) &&
+	    osd_fseek(zip->fp, ent->offset_lcl_hdr_frm_frst_disk, SEEK_SET) == 0 &&
+	    osd_fread(zip->fp, head, ZIPNAME) == ZIPNAME &&
+	    read_dword(head + ZIPLOCSIG) == 0x04034b50 && read_word(head + ZIPMTHD) == 0 &&
+	    read_word(head + ZIPFNLN) == ent->filename_length &&
+	    (name = (char*)malloc(ent->filename_length + 1)) != NULL &&
+	    osd_fread(zip->fp, name, ent->filename_length) == ent->filename_length &&
+	    memcmp(name, ent->name, ent->filename_length) == 0)
+	{
+		/* the data follows the local header, its file name and extra field, inside the zip */
+		const UINT64 data = (UINT64)ent->offset_lcl_hdr_frm_frst_disk + ZIPNAME + ent->filename_length + read_word(head + ZIPXTRALN);
+		if (data + ent->uncompressed_size <= (UINT64)zip->length) {
+			*offset = data;
+			*length = ent->uncompressed_size;
+			*sum = ent->crc32;
+			err = 0;
+		}
+	}
+
+	free(name);
+	closezip(zip);
+	return err;
 }

@@ -75,7 +75,9 @@ static void taitos_nmi_timed(int state) {
 static WRITE_HANDLER(pia0a_w)
 {
 //	logerror("pia0a_w: %02x\n", data);
-	DAC_data_w(0, data);
+	/* DC offset correction: this is the sintetizador's sound output (the 6802's PIA port A; port B is the SC-01A).
+	   Scaled by 0x101/2, exactly what UnsignedVolTable applied via DAC_data_w() */
+	DAC_DC_offset_correction_data_16_w(0, data * 0x101 / 2);
 }
 
 static WRITE_HANDLER(pia0b_w)
@@ -154,16 +156,17 @@ static void taitos_diag(int state) {
 
 struct DACinterface TAITO_dacInt =
 {
-  1,			/* 1 Chip */
-  {25}			/* Volume */
+  1,	/* 1 Chip */
+  {25},	/* Volume */
+  {1}	/* DC offset correction */
 };
 
 struct VOTRAXSC01interface TAITO_votrax_sc01_interface = {
-	1,						/* 1 chip */
-	{ 1 },					/* SC-01-A */ // most likely the oldest (Fire Action and ???) Taitos (or all??) feature the SC-01?
-	{ 75 },					/* master volume */ // OLD_VOTRAX 50
-	{ 720000 },				/* dynamically changing this is currently not supported */ // 'About the SC01, it does not have an external oscillator' // OLD_VOTRAX: 8000
-	{ &votrax_busy }		/* set NMI when busy signal get's low */
+	1,					/* 1 chip */
+	{ 1 },				/* SC-01-A */ // most likely the oldest (Fire Action and ???) Taitos (or all??) feature the SC-01?
+	{ 75 },				/* master volume */ // OLD_VOTRAX 50
+	{ 720000 },			/* dynamically changing this is currently not supported */ // 'About the SC01, it does not have an external oscillator' // OLD_VOTRAX: 8000
+	{ &votrax_busy }	/* set NMI when busy signal get's low */
 };
 
 /*-------------------

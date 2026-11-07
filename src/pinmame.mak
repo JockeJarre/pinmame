@@ -21,7 +21,21 @@ DRVLIBS = $(PINOBJ)/sim.o $(PINOBJ)/core.o $(OBJ)/allgames.a
 DRVLIBS += $(PINOBJ)/vpintf.o $(PINOBJ)/snd_cmd.o $(PINOBJ)/wpcsam.o
 DRVLIBS += $(PINOBJ)/sndbrd.o $(PINOBJ)/bulb.o 
 DRVLIBS += $(OBJ)/machine/4094.o
+DRVLIBS += $(OBJ)/machine/i8256.o
 DRVLIBS += $(OBJ)/sound/wavwrite.o
+
+ifdef REMOTE_DEBUG
+DRVLIBS += $(OBJ)/remote_debug/remote_debug.o $(OBJ)/remote_debug/http_server.o $(OBJ)/remote_debug/api_handler.o
+
+# The remote debugger sources must compile without warnings; enforce this
+# for these objects only. Project include dirs are turned into system
+# include dirs so that legacy core headers do not trigger warnings here.
+REMOTE_DEBUG_CFLAGS = -std=gnu99 -Wall -Wextra -Wunused -pedantic
+
+$(OBJ)/remote_debug/%.o: src/remote_debug/%.c
+	$(CC_COMMENT) @echo 'Compiling $< (strict) ...'
+	$(CC_COMPILE) $(CC) $(patsubst -I%,-isystem%,$(MY_CFLAGS)) $(REMOTE_DEBUG_CFLAGS) -o $@ -c $<
+endif
 
 COREOBJS += $(PINOBJ)/driver.o $(OBJ)/cheat.o $(PINOBJ)/mech.o
 
@@ -48,6 +62,15 @@ DRVLIBS += $(PINOBJ)/gp.o $(PINOBJ)/gpsnd.o
 DRVLIBS += $(PINOBJ)/atari.o $(PINOBJ)/atarisnd.o
 DRVLIBS += $(PINOBJ)/taito.o $(PINOBJ)/taitos.o
 DRVLIBS += $(PINOBJ)/gts1.o
+DRVLIBS += $(PINOBJ)/recel.o $(PINOBJ)/recelsnd.o
+DRVLIBS += $(PINOBJ)/pinheck.o
+DRVLIBS += $(PINOBJ)/pinheck/dmd.o
+DRVLIBS += $(PINOBJ)/pinheck/hexload.o
+DRVLIBS += $(PINOBJ)/pinheck/board.o
+DRVLIBS += $(PINOBJ)/pinheck/audio.o
+DRVLIBS += $(PINOBJ)/pinheck/display.o
+DRVLIBS += $(PINOBJ)/pinheck/sd.o $(PINOBJ)/pinheck/vfat.o $(PINOBJ)/pinheck/zipsrc.o
+DRVLIBS += $(PINOBJ)/pinheck/prop.o $(PINOBJ)/pinheck/eeprom.o $(PINOBJ)/pinheck/rtc.o $(PINOBJ)/pinheck/bootldr.o $(OBJ)/cpu/p8x32a/p8x32a.o
 DRVLIBS += $(PINOBJ)/alvg.o $(PINOBJ)/alvgdmd.o $(PINOBJ)/alvgs.o
 DRVLIBS += $(PINOBJ)/bingo.o
 DRVLIBS += $(PINOBJ)/techno.o
@@ -58,6 +81,7 @@ DRVLIBS += $(PINOBJ)/inder.o $(PINOBJ)/inderp.o
 DRVLIBS += $(PINOBJ)/jp.o
 DRVLIBS += $(PINOBJ)/ltd.o
 DRVLIBS += $(PINOBJ)/peyper.o
+DRVLIBS += $(PINOBJ)/rfranco.o
 DRVLIBS += $(PINOBJ)/sleic.o
 DRVLIBS += $(PINOBJ)/play.o $(PINOBJ)/playsnd.o
 DRVLIBS += $(PINOBJ)/bowarrow.o $(PINOBJ)/flicker.o $(PINOBJ)/rotation.o
@@ -84,6 +108,11 @@ DRVLIBS += $(PINOBJ)/slalom.o
 DRVLIBS += $(PINOBJ)/boomerang.o
 DRVLIBS += $(PINOBJ)/spiritof76.o
 DRVLIBS += $(PINOBJ)/luckydraw.o
+# Pinball 2000 bring-up driver. src/wpc/p2k.c is itself wrapped in #if HAS_MEDIAGX, so without
+# the subsystem it compiles to an empty object - this only avoids building it at all.
+ifdef P2K
+DRVLIBS += $(PINOBJ)/p2k.o
+endif
 DRVLIBS += $(PINOBJ)/efo.o $(PINOBJ)/efosnd.o
 DRVLIBS += $(PINOBJ)/regama.o
 #
@@ -107,6 +136,12 @@ PINGAMES += $(PINOBJ)/atarigames.o
 PINGAMES += $(PINOBJ)/taitogames.o
 PINGAMES += $(PINOBJ)/capgames.o
 PINGAMES += $(PINOBJ)/gts1games.o
+PINGAMES += $(PINOBJ)/recelgames.o
+PINGAMES += $(PINOBJ)/pinheckgames.o
+PINGAMES += $(PINOBJ)/sims/pinheck/amh.o
+PINGAMES += $(PINOBJ)/sims/pinheck/jetsons.o
+PINGAMES += $(PINOBJ)/sims/pinheck/rzspook.o
+PINGAMES += $(PINOBJ)/sims/pinheck/dominos.o
 PINGAMES += $(PINOBJ)/alvggames.o
 PINGAMES += $(PINOBJ)/spinbgames.o
 PINGAMES += $(PINOBJ)/mrgamegames.o
@@ -114,11 +149,13 @@ PINGAMES += $(PINOBJ)/indergames.o
 PINGAMES += $(PINOBJ)/jpgames.o
 PINGAMES += $(PINOBJ)/ltdgames.o
 PINGAMES += $(PINOBJ)/peypergames.o
+PINGAMES += $(PINOBJ)/rfrancogames.o
 PINGAMES += $(PINOBJ)/sleicgames.o
 PINGAMES += $(PINOBJ)/playgames.o
 #
 # Simulators
 #
+PINGAMES += $(PINOBJ)/sims/atari/prelim/fourx4.o
 PINGAMES += $(PINOBJ)/sims/s7/full/bk.o
 PINGAMES += $(PINOBJ)/sims/s7/full/tmfnt.o
 PINGAMES += $(PINOBJ)/sims/s11/prelim/eatpm.o
@@ -127,6 +164,7 @@ PINGAMES += $(PINOBJ)/sims/s11/full/dd.o
 PINGAMES += $(PINOBJ)/sims/se/prelim/monopoly.o
 PINGAMES += $(PINOBJ)/sims/se/prelim/elvis.o
 PINGAMES += $(PINOBJ)/sims/se/prelim/harley.o
+PINGAMES += $(PINOBJ)/sims/sleic/iomoon.o
 PINGAMES += $(PINOBJ)/sims/wpc/full/afm.o
 PINGAMES += $(PINOBJ)/sims/wpc/full/bop.o
 PINGAMES += $(PINOBJ)/sims/wpc/full/br.o
@@ -206,6 +244,12 @@ CPUS += TMS7000@
 CPUS += SCAMP@
 CPUS += ARM7@
 CPUS += AT91@
+CPUS += PIC32MX@
+# The MediaGX core lives in src/p2k/, so only register it when that is built - otherwise
+# cpuintrf's table references symbols nothing provides and a plain build fails to link.
+ifdef P2K
+CPUS += MEDIAGX@
+endif
 CPUS += CDP1802@
 CPUS += TMS9980@
 CPUS += TMS9995@
@@ -213,6 +257,7 @@ CPUS += COP420@
 
 SOUNDS += DAC@
 SOUNDS += YM2151_ALT@
+#SOUNDS += YM2151_LLE@  # GPLv2
 ifdef ISVER6300
 SOUNDS += YM2610@ #to avoid compile errors
 SOUNDS += YM2610B@
@@ -247,10 +292,13 @@ SOUNDS += Y8950@
 SOUNDS += ASTROCADE@
 SOUNDS += YMF262@
 SOUNDS += MEA8000@
+# pick one SAA1099 core (see pinmame.h)
 SOUNDS += SAA1099@
+#SOUNDS += SAA1099_VB@
 SOUNDS += QSOUND@
 
 OBJDIRS += $(PINOBJ)
+OBJDIRS += $(PINOBJ)/pinheck $(OBJ)/cpu/p8x32a
 OBJDIRS += $(PINOBJ)/sims
 OBJDIRS += $(PINOBJ)/sims/wpc
 OBJDIRS += $(PINOBJ)/sims/wpc/prelim
@@ -262,6 +310,10 @@ OBJDIRS += $(PINOBJ)/sims/s7
 OBJDIRS += $(PINOBJ)/sims/s7/full
 OBJDIRS += $(PINOBJ)/sims/se
 OBJDIRS += $(PINOBJ)/sims/se/prelim
+OBJDIRS += $(PINOBJ)/sims/sleic
+OBJDIRS += $(PINOBJ)/sims/pinheck
+OBJDIRS += $(PINOBJ)/sims/atari
+OBJDIRS += $(PINOBJ)/sims/atari/prelim
 
 $(OBJ)/allgames.a: $(PINGAMES)
 #

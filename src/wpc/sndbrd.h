@@ -16,6 +16,7 @@ extern int sndbrd_ctrl_r(int board);
 extern void sndbrd_ctrl_cb(int board, int data);
 extern void sndbrd_data_cb(int board, int data);
 void sndbrd_setManCmd(int board, WRITE_HANDLER((*manCmd)));
+void sndbrd_logData(int board, int on);
 void sndbrd_manCmd(int board, int cmd);
 extern void sndbrd_0_init(int brdType, int cpuNo, UINT8 *romRegion,
                           WRITE_HANDLER((*data_cb)),WRITE_HANDLER((*ctrl_cb)));
@@ -53,6 +54,9 @@ struct sndbrdIntf {
   WRITE_HANDLER((*ctrl_w));
    READ_HANDLER((*ctrl_r));
   UINT32 flags;
+  /* Used instead when the sound is off (sample rate 0): the board's CPU does not run,
+     this answers what the main CPU waits for from it (boot reply, queries). Optional. */
+  const struct sndbrdIntf *soundOff;
 };
 
 #define SNDBRD_NODATASYNC 0x0001 // Don't use cpu sync'ed data writes
@@ -68,6 +72,7 @@ struct sndbrdIntf {
 #define SNDBRD_DCS     SNDBRD_TYPE( 3,0)
 #define SNDBRD_DCSB    SNDBRD_TYPE( 3,1)
 #define SNDBRD_DCS95   SNDBRD_TYPE( 3,2)
+#define SNDBRD_DCSP2K  SNDBRD_TYPE( 3,3) // Pinball 2000 DCS2 (ADSP-2104 + SDRC)
 #define SNDBRD_BY32    SNDBRD_TYPE( 4,0)
 #define SNDBRD_BY50    SNDBRD_BY32
 #define SNDBRD_BY51    SNDBRD_TYPE( 5,0)

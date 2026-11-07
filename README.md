@@ -5,8 +5,10 @@
 ## What is it?
 
 PinMAME emulates the hardware found in almost every solid state pinball machine created from
-the earliest days of CPU-controlled machines (mid 1970's) through 2014 (Stern SAM),
-with around 770 emulated unique Pinball machines and many more clones/revisions (overall more than 2700 sets).
+the earliest days of CPU-controlled machines (mid 1970's) through 2014 / 2017 / 2020 (Stern SAM / PinHeck / Stern SPIKE 1),
+with around 820 emulated unique Pinball machines and many more clones/revisions (overall almost 3000 sets).
+In addition to official revisions, PinMAME also allows for homebrew modifications, similar in spirit to HBMAME
+(these are all marked as 'MOD' in the naming).
 It is available in various forms:
 
 Standalone Emulator (PinMAME (command line), PinMAME32 (UI))
@@ -21,17 +23,17 @@ Supported platforms: Windows (x86), Linux (x86/Arm, incl. RaspberryPi and RK3588
 Currently, the following pinball hardware is emulated:
 
 Williams/Bally WPC, Williams/Bally System 11, Williams System 9, Williams System 7,
-Williams System 6, Williams System 4, Williams System 3,
+Williams System 6, Williams System 4, Williams System 3, Pinball 2000,
 Data East AlphaNumeric System, Data East 128x16 DMD, Data East 128x32 DMD,
-Data East/Sega 192x64 DMD, Sega/Stern Whitestar System, Stern S.A.M., Stern MPU-100, Stern MPU-200,
-Bally MPU-17 & MPU-35, Bally Video/Pinball, Bally 6803,
+Data East/Sega 192x64 DMD, Sega/Stern Whitestar System, Stern S.A.M., Stern SPIKE 1, Stern MPU-100, Stern MPU-200,
+Bally MPU-17 & MPU-35, Bally Video/Pinball, Bally 6803, Elbos,
 Gottlieb System 1, 80, 80a, 80b, System 3, Hankin, Gameplan MPU-1 & MPU-2, Atari,
 Zaccaria, Taito of Brazil, Midway, Capcom, Alvin G. and Co., Technoplay, Mr.Game, Spinball,
 Nuova Bell, Inder, Juegos Populares, LTD, Peyper, Sonic, Allied Leisure, Fascination, Int.,
 Sleic, Playmatic, NSM, Grand Products, Jac van Ham, Videodens, Astro, Micropin,
 Christian Tabart, Jeutel, Valley Manufacturing, MAC / CICPlay, Stargame, Barni,
 Seeben/Sirmo, Splin Bingo, Playbar, Cirsa, Nondum / CIFA, Maibesa, ManilaMatic, Joctronic, Mirco,
-Sport Matic, Regama, Illinois Pinball.
+Sport Matic, Regama, Recel, Interflip, Recreativos Franco, Illinois Pinball, Spooky Pinball PinHeck.
 
 *Note: Emulation is not 100% working and correct for all hardware, but very close for the vast majority.*
 
@@ -43,11 +45,33 @@ info on using MAME related functions.
 All standard MAME "functions" do work the same way in PinMAME (profiler, debugger, cheats,
 record/playback, command line switches etc.).
 
+In addition to the built-in debugger, it also includes an **Advanced Remote Debugger** module, providing a thread-safe REST API and a high-fidelity web dashboard for headless or remote analysis.
+Features include real-time DMD/Alphanumeric rendering, hardware breakpoints, memory pattern search, and interactive matrix visualization. See the [README](src/remote_debug/README.md) for full documentation and API reference.
+For the moment, it's mostly useful for debugging WPC/Sys11/6809-based machines, but is applicable to all machines.
+
 In addition, there is special compile time support for the [P-ROC](http://www.pinballcontrollers.com),
 to drive (at least) real WPC machines with PinMAME/P-ROC, [PPUC](https://github.com/PPUC) and LISY
 (Linux for Gottlieb System1 & System80, Bally, Atari, Williams and 'HOme' Pinballs, to drive real pinball machines via
 PinMAME and special hardware, see http://www.lisy80.com & http://www.lisy.dev, also README.lisy)
 platforms (see PROC and LISY_X defines in makefile.unix).
+
+## Downloads
+
+Builds are available on the [Releases](https://github.com/vpinball/pinmame/releases) page (and as artifacts of each CI run).
+The archives are named `<name>-<version>-<platform>`:
+
+- `VPinMAME` - the COM library used by Visual Pinball (`VPinMAME.dll` + `Setup.exe` for x86, `VPinMAME64.dll` + `Setup64.exe` for x64). Take the one matching your Visual Pinball build (32 or 64 bit), but both variants can coexist. Run `Setup(64).exe`, press `Install` and then setup the defaults/paths
+- `PinMAME` - the standalone command line emulator for Windows (mainly useful for development)
+- `PinMAME32` - the standalone emulator for Windows with a graphical UI (mainly useful for development)
+- `libpinmame` - the library (shared and static) for Windows (incl. MinGW and ARM64), Linux (x64/aarch64), macOS, iOS/tvOS and Android (already included in the Visual Pinball X 10.8.1+ download)
+- `xpinmame` - the standalone emulator for Linux and macOS (X11) (mainly useful for development)
+- `sdl3pinmame` - the standalone emulator for Linux and macOS using SDL3 (CI artifacts only) (mainly useful for development)
+
+Variants:
+
+- `win-x86` / `win-x64` - 32 bit / 64 bit Windows
+- `-sc` - additionally includes the sets for the colorized Stern S.A.M. ROMs (Legacy-colored MODs). Only needed if you use these ROMs
+- `-md` (PinMAME32 only) - built with the MAME debugger enabled (mainly useful for development)
 
 ## What does it do?
 
@@ -60,6 +84,9 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 
 ## Games supported (incomplete)
 
+See [SUPPORTED_MACHINES.md](SUPPORTED_MACHINES.md) for a more complete, machine-by-machine list (limited though to entries that can be found on Open Pinball Database).
+
+- *Midway Pinball 2000* - All games from Revenge From Mars (1999) to Star Wars Episode I (1999)
 - *Williams/Bally WPC* - All games from Dr. Dude (1990) to Cactus Canyon (1998)
 - *Williams/Bally System 11* - All games from High Speed (1986) to Dr.Dude (1990)
 - *Williams System 9* - All games from Space Shuttle (1984) to Comet (1985)
@@ -74,6 +101,7 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 - *Sega 256x64 DMD* - Flipper Football (1996)
 - *Sega/Stern Whitestar* - All games from Apollo 13 (1995) to Nascar (2005)
 - *Stern S.A.M.* - All games from World Poker Tour (2006) to Walking Dead (2014)
+- *Stern SPIKE 1* - All games from Transformers The Pin (2012) to Heavy Metal (2020)
 - *Stern MPU-100* - All games from Stingray (1977) to Magic (1979)
 - *Stern MPU-200* - All games from Meteor (1979) to Lazer Lord (1984)
 - *Bally MPU-17* - All games from Freedom (1977) to Black Jack (1978)
@@ -86,7 +114,7 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 - *Gottlieb System 3* - All games from Lights,Camera,Action (1989) to Barb Wire (1996)
 - *Hankin Pinball* - All games from FJ Holden (1978) to Orbit 1 (1981)
 - *Game Plan Pinball* - All games from Rio (1978) to Cyclopes (1985)
-- *Atari Pinball* - All games from Atarians (1976) to Road Runner (1979)
+- *Atari Pinball* - All games from Atarians (1976) to 4x4 (1983)
 - *Zaccaria Pinball* - All games from Winter Sports (1978) to New Star's Phoenix (1987)
 - *Taito Pinball* - All that's available... games between 1980 and 1985
 - *Midway Pinball* - Rotation VIII (1978)
@@ -96,14 +124,17 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 - *Mr. Game* - Dakar, Motor Show (1988), World Cup '90 (1990)
 - *Spinball* - Mach 2 (1995), Jolly Park (1996)
 - *Nuova Bell* - all available Bally clones, also Future Queen (1987), F1 Grand Prix (1987), U-Boat 65 (1988)
-- *Inder* - Brave Team (1985), Canasta 86 (1986), Clown (1988), Corsario (1989), Atleta (1991), 250cc (1992), Bushido (1993)
+- *Inder* - Hot & Cold, Screech (both 1978), Brave Team (1985), Canasta 86 (1986), Clown (1988), Corsario (1989), Atleta (1991), 250cc (1992), Bushido (1993)
 - *Juegos Populares* - Petaco (1984), Faeton (1985), America 1492, Aqualand (both 1987)
 - *LTD* - Atlantis, Black Hole, Zephy, Cowboy Eight Ball, Mr. & Mrs. Pec-Men, Al Capone (1980-1983)
+- *Interflip* - Alaska (1978)
 - *Peyper* - Odisea Paris-Dakar (1987)
+- *Recel* - Crazy Race, Poker Plus, Fair Fight, Mr. Evil (all 1978), Mr. Doom, Cavalier, SwashBuckler, Don Quijote (all 1979), The Flipper Game, Black Magic, Black Magic 4 (all 1980)
+- *Recreativos Franco* - Super Star (1986)
 - *Sonic* - Odin DeLuxe (1985), Pole Position (1987), Star Wars (1987)
 - *Allied Leisure* - All games from Super Picker (1977) to Star Shooter (1979)
 - *Fascination, Int.* - Roy Clark - The Entertainer (1977), Eros One, and Circa 1933 (both 1979)
-- *Sleic*
+- *Sleic* - Bike Race (1992, standard and 2-ball versions), Sleic Pin-Ball (1993), Io Moon (1996)
 - *Playmatic* - Last Lap (1978), Antar (1979), Evil Fight (1980), Mad Race (1982), Meg-Aaton (1983), KZ-26 (1984) (*)
 - *NSM*
 - *Grand Products* - 300/Bullseye (1986)
@@ -119,7 +150,7 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 - *Barni* - Red Baron (1985)
 - *Splin Bingo* -  Golden Game
 - *Playbar* - Bloody Roller
-- *Cirsa*
+- *Cirsa* - Sport 2000 (1988)
 - *Nondum / CIFA*
 - *Maibesa*
 - *ManilaMatic*
@@ -127,6 +158,8 @@ and listen to/record the pinball game sounds with the pure PinMAME package itsel
 - *Mirco*
 - *Sport Matic*
 - *Regama* - Trebol
+- *Elbos* - Genesis (1982)
+- *Spooky Pinball (PinHeck)* - America's Most Haunted (2014), Domino's Spectacular Pinball Adventure (2016), Rob Zombie's Spookshow International (2016), The Jetsons (2017)
 - **Prototype games and modifications**
   - Dave Nutting's Flicker (Sep 1974)
   - Bally's Bow & Arrow (Jan 1976)
@@ -152,6 +185,40 @@ Essentially, it triggers the correct switches depending on where the balls are l
 
 For more information, please refer to [simulation.txt](release/simulation.txt) for instructions on using the pinball simulator built into PinMAME! Many games are not fully simulated, but some have at least preliminary simulator support!
 
+## Remote Debugger & Headless Mode
+
+Extension designed for deep hardware reversing and headless operation (e.g., in Docker or CI environments), for the moment mostly targeted at WPC/6809-based machines,
+and running PinMAME for Linux, but in general applicable to all machines. For details see the [README](src/remote_debug/README.md).
+
+### Key Features
+- **Headless Execution**: Run PinMAME without X11/SDL windows using the `-headless` flag.
+- **REST API**: Control the emulator via a thread-safe HTTP interface.
+- **Web Dashboard**: Modern, low-latency UI for live DMD rendering, memory editing, and disassembling.
+- **WPC Specialization**: Real-time visualization of Lamp, Switch, and Solenoid matrices, including WPC ROM banking.
+- **Classic CLI**: Support for MAME-style debugger commands (`BP`, `WP`, `G`, `S`, etc.) via the web console.
+
+### Advanced Features
+- **Memory Search**: Hex pattern matching via the UI or `GET /api/debugger/memory/find`.
+- **Cabinet & Service Panel**: Interactive buttons for COIN, START, and Service functions (+, -, ESC, ENT) with real-time feedback.
+- **Immediate Execution Halt**: Breakpoints and watchpoints trigger an instant CPU abort for precise instruction-level debugging.
+- **WPC Matrix Visualizer**: Live 8x8 grids for Lamps and Switches, plus Solenoid tracking.
+
+### Building
+To build with the Remote Debugger extension:
+```bash
+make -f makefile.unix REMOTE_DEBUG=1
+```
+
+### Usage
+Start PinMAME in headless mode with the debugger active:
+```bash
+./xpinmamed.x11 -headless -startpaused -httpport 8935 taf_l7
+```
+- `-headless`: Disables video/input windows.
+- `-startpaused`: Halts the CPU at the first instruction.
+- `-httpport <port>`: Sets the API/UI port (default: 8935).
+
 # Note from the PinMAME Development team
 
 We're working hard to improve this great emulator, and welcome your feedback!! Please do not hesitate to contact us with questions, bug reports, suggestions, code patches, whatever!
+NOTE that we will not accept any recent pinball machine emulation code, so please make sure that what you're contributing has been out of production for many years!

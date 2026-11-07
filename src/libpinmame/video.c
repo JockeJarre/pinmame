@@ -19,6 +19,7 @@
 #include "menu.h"
 #endif
 
+extern void libpinmame_drain_pending_writes(void);
 extern void libpinmame_log_info(const char* format, ...);
 
 //============================================================
@@ -49,7 +50,7 @@ int autoframeskip;
 
 // speed throttling
 int throttle = 1;
-int fastfrms = 0;
+int fastfrms = -1; // 0 would force throttle=1 on the first frame (see windows/video.c)
 int g_low_latency_throttle = 0;
 
 // rotation
@@ -137,6 +138,20 @@ static const int skiptable[FRAMESKIP_LEVELS][FRAMESKIP_LEVELS] =
 //static char *effect;
 //static char *aspect;
 
+static int config_handle_rtc(struct rc_option *option, const char *arg, int priority)
+{
+	/* rc leaves recording the priority to callbacks; without it an ini, read after the command line, would override it */
+	if (rtc_set_start(arg))
+		return -1;
+	option->priority = priority;
+	return 0;
+}
+
+static int config_handle_dip(struct rc_option *option, const char *arg, int priority)
+{
+	return dip_override_add(arg, priority);
+}
+
 // options struct
 struct rc_option video_opts[] =
 {
@@ -172,6 +187,10 @@ struct rc_option video_opts[] =
 	{ "throttle", NULL, rc_bool, &throttle, "1", 0, 0, NULL, "throttle speed to the game's framerate" },
 	//{ "full_screen_brightness", "fsb", rc_float, &win_gfx_brightness, "0.0", 0.0, 4.0, NULL, "sets the brightness in full screen mode" },
 	{ "frames_to_run", "ftr", rc_int, &frames_to_display, "0", 0, 0, NULL, "sets the number of frames to run within the game" },
+	{ "key_script", NULL, rc_string, &pmoptions.key_script, NULL, 0, 0, NULL, "File of scripted keyboard events" },
+	{ "dmd_dump_dir", NULL, rc_string, &pmoptions.dmd_dump_dir, NULL, 0, 0, NULL, "Directory to write the DMD frame dump to" },
+	{ "dip", NULL, rc_use_function, NULL, NULL, 0, 0, config_handle_dip, "Set a DIP switch: \"<name>=<setting>\", repeatable" },
+	{ "rtc", NULL, rc_use_function, NULL, NULL, 0, 0, config_handle_rtc, "Fix the emulated real-time clock: \"YYYY-MM-DD HH:MM[:SS]\"" },
 	//{ "effect", NULL, rc_string, &effect, "none", 0, 0, decode_effect, "specify the blitting effect" },
 	//{ "screen_aspect", NULL, rc_string, &aspect, "4:3", 0, 0, decode_aspect, "specify an alternate monitor aspect ratio" },
 	{ "sleep", NULL, rc_bool, &allow_sleep, "1", 0, 0, NULL, "allow " APPNAME " to give back time to the system when it's not needed" },
@@ -446,6 +465,11 @@ void throttle_speed_part(int part, int totalparts)
 	if (options.time_fence != 0.0 && time_fence_is_supported())
 		return;
 
+	// if throttling is off (FastFrames measurement window), the low-latency sub-frame pacing must not pace either. Only the sub-frame calls are gated here (totalparts != 1);
+	// the whole-frame call keeps its caller's gating in update_timing (which includes the game-paused case)
+	if (totalparts != 1 && !throttle)
+		return;
+
 	// this counts as idle time
 	profiler_mark(PROFILER_IDLE);
 
@@ -612,8 +636,10 @@ static void update_timing()
 
 	if (fastfrms >= 0)
 	{
-		if (fastfrms-- == 0) throttle = 1;
-		else throttle = 0;
+		// FastFrames measurement window: run unthrottled for N frames. Also lift the external time fence (host master clock) for the window
+		// otherwise the host keeps pacing the emulation and there is nothing to measure
+		if (fastfrms-- == 0) { throttle = 1; time_fence_bypass = 0; }
+		else                 { throttle = 0; time_fence_bypass = 1; }
 	}
 
 	// if we're throttling, synchronize
@@ -659,6 +685,10 @@ static void update_timing()
 void osd_update_video_and_audio(struct mame_display *display)
 {
 	cycles_t cps = osd_cycles_per_second();
+
+	/* Runs once per frame on the emulation thread, which is where queued writes
+	   have to be applied. */
+	libpinmame_drain_pending_writes();
 
 	// if this is the first time through, initialize the previous time value
 	if (warming_up)

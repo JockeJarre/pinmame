@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ========================================================================= -->
-<!-- asmjit.props - enable the asmjit-based ARM7 JIT in a project.                 -->
+<!-- asmjit.props - enable the asmjit-based ARM7 and Propeller JITs in a project.   -->
 <!--                                                                               -->
 <!-- Importing this .props into a .vcxproj compiles the vendored asmjit sources    -->
-<!-- (ext/asmjit) plus src/windows/jit_asmjit.cpp directly into that project,      -->
+<!-- (ext/asmjit) plus src/windows/jit_asmjit.cpp and src/cpu/p8x32a/p8x32ajit.cpp -->
+<!-- directly into that project,                                                   -->
 <!-- using the project's OWN PlatformToolset. asmjit 1.21 needs C++17, so only     -->
 <!-- import this from projects built with v141+ (VS2017+). The vc2017/2019/2022/   -->
 <!-- 2026 conversion .bat files inject this import automatically; the v110/v140    -->
@@ -11,7 +12,14 @@
 <!--                                                                               -->
 <!-- Per-item metadata (CompileAsCpp, stdcpp17, PCH NotUsing, include dirs,        -->
 <!-- defines) is set on each item so the consumer project's C-file settings are    -->
-<!-- untouched. Paths use $(MSBuildThisFileDirectory) so they resolve relative to  -->
+<!-- untouched; everything else - optimization, /GL, /arch, the CRT - comes from   -->
+<!-- the project's own per-configuration settings, as it should. ExceptionHandling -->
+<!-- is one of the overrides: PinMAME, PinMAME32 and LibPinMAME build with         -->
+<!-- exceptions off, jit_asmjit.cpp keeps its block table in a std::vector, and    -->
+<!-- the CMake path compiles all of this with /EHsc (OPT_COMMON) - so Sync here    -->
+<!-- keeps the two build systems emitting the same code. RTTI needs no such        -->
+<!-- override: neither asmjit nor jit_asmjit.cpp uses dynamic_cast or typeid.      -->
+<!-- Paths use $(MSBuildThisFileDirectory) so they resolve relative to             -->
 <!-- this file regardless of the importing project's location. (MSBuild accepts    -->
 <!-- forward slashes in Include paths on Windows.)                                 -->
 <!--                                                                               -->
@@ -26,6 +34,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -35,6 +44,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -44,6 +54,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -53,6 +64,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -62,6 +74,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -71,6 +84,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -80,6 +94,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -89,6 +104,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -98,6 +114,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -107,6 +124,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -116,6 +134,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -125,6 +144,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -134,6 +154,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -143,6 +164,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -152,6 +174,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -161,6 +184,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -170,6 +194,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -179,6 +204,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -188,6 +214,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -197,6 +224,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -206,6 +234,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -215,6 +244,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -224,6 +254,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -233,6 +264,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -242,6 +274,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -251,6 +284,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -260,6 +294,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -269,6 +304,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -278,6 +314,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -287,6 +324,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -296,6 +334,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -305,6 +344,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -314,6 +354,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -323,6 +364,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -332,6 +374,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -341,6 +384,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -350,6 +394,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -359,6 +404,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -368,6 +414,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -377,6 +424,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -386,6 +434,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -395,6 +444,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -404,6 +454,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -413,6 +464,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -422,6 +474,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -431,6 +484,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -440,6 +494,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -449,6 +504,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -458,6 +514,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -467,6 +524,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -476,6 +534,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -485,6 +544,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -494,6 +554,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -503,6 +564,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -512,6 +574,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -521,6 +584,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -530,6 +594,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -539,6 +604,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -548,6 +614,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -557,6 +624,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -566,6 +634,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -575,6 +644,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -584,6 +654,17 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <CompileAs>CompileAsCpp</CompileAs>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>Level1</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PINMAME_JIT_ASMJIT;ASMJIT_STATIC;ASMJIT_NO_FOREIGN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)../src/cpu/p8x32a/p8x32ajit.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <WarningLevel>Level1</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)../ext/asmjit;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

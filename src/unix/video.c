@@ -361,6 +361,14 @@ int osd_create_display(const struct osd_create_params *params,
 {
 	int r, g, b;
 
+	if (pmoptions.headless) {
+		memset(&display_palette_info, 0, sizeof(struct sysdep_palette_info));
+		display_palette_info.depth = 32;
+		display_palette_info.red_mask   = 0x00FF0000;
+		display_palette_info.green_mask = 0x0000FF00;
+		display_palette_info.blue_mask  = 0x000000FF;
+	}
+
 	bitmap_depth = (params->depth == 15) ? 16 : params->depth;
 	using_15bpp_rgb_direct = (params->depth == 15);
 
@@ -419,8 +427,10 @@ int osd_create_display(const struct osd_create_params *params,
 	use_aspect_ratio	= normal_use_aspect_ratio;
 	video_fps		= params->fps;
 
+	if (!pmoptions.headless) {
 	if (sysdep_create_display(bitmap_depth) != OSD_OK)
 		return -1;
+	}
 
 #if 0 /* DEBUG */
 	fprintf(stderr_file, "viswidth = %d, visheight = %d, visstartx= %d,"
@@ -430,8 +440,10 @@ int osd_create_display(const struct osd_create_params *params,
 
 	/* a lot of display_targets need to have the display initialised before
 	   initialising any input devices */
+	if (!pmoptions.headless) {
 	if (osd_input_initpost() != OSD_OK)
 		return -1;
+	}
 
 	if (bitmap_depth == 16)
 		fprintf(stderr_file,"Using 16bpp video mode\n");
@@ -440,10 +452,12 @@ int osd_create_display(const struct osd_create_params *params,
 		return 1;
 
 	/* alloc the total number of colors that can be used by the palette */
+	if (!pmoptions.headless) {
 	if (sysdep_display_alloc_palette(65536))
 	{
 		osd_free_colors();
 		return 1;
+	}
 	}
 
 	/* initialize the palette to a fixed 5-5-5 mapping */
@@ -502,6 +516,11 @@ int osd_create_display(const struct osd_create_params *params,
 
 void osd_close_display(void)
 {
+	/* Headless never created a display, and tearing one down that was never there walks into
+	   XSync() on a null connection - a segfault at exit, after the emulation is over but before
+	   the process is. It went unnoticed while the only way to end a headless run was to kill it. */
+	if (pmoptions.headless) return;
+
 	osd_free_colors();
 	sysdep_display_close();
 
@@ -517,6 +536,7 @@ static void osd_change_display_settings(struct rectangle *new_visual,
 		struct sysdep_palette_struct *new_palette, int new_widthscale,
 		int new_heightscale, int new_use_aspect_ratio)
 {
+	if (pmoptions.headless) return;
 	int new_visual_width, new_visual_height;
 
 	/* always update the visual info */
@@ -743,9 +763,41 @@ void change_debugger_focus(int new_debugger_focus)
 	}
 }
 
+#ifdef REMOTE_DEBUG
+#include "remote_debug/remote_debug.h"
+#endif
+
 /* Update the display. */
 void osd_update_video_and_audio(struct mame_display *display)
 {
+#ifdef REMOTE_DEBUG
+	remote_debug_frame_update(display);
+#endif
+	/* Headless: -frames_to_run has to be honoured here.  The frame counter below
+	   lives inside the `GAME_BITMAP_CHANGED` blit block, and headless never creates
+	   a display, so that block never runs and -ftr N never terminated the run --
+	   headless runs could only be killed on a wall-clock timer.  This function is
+	   called exactly once per emulated frame (from updatescreen(), via
+	   artwork_update_video_and_audio(), whether or not the frame is skipped), so
+	   counting here is the same count the display path would have produced.
+	   Same class of gap as the headless osd_close_display() fix above.
+
+	   The termination test is deliberately spelled the same way as the display
+	   path's below (`frames_displayed + 1 == frames_to_display`) rather than as
+	   `>= frames_to_display`: the two differ by one frame, so the same -ftr N
+	   would otherwise emulate a different number of frames headless than
+	   windowed.  The `> 0` guard is kept because "run forever" is 0 here.
+	   Note the display path's counter still means something slightly different
+	   -- it starts only once start_time is set, a second into the run, and it
+	   skips frames that are not blitted -- so this aligns the comparison, not
+	   the whole meaning of the count. */
+	if (pmoptions.headless)
+	{
+		frames_displayed++;
+		if (frames_to_display > 0 && frames_displayed + 1 == frames_to_display)
+			trying_to_quit = 1;
+		return;
+	}
 	int skip_this_frame;
 	cycles_t curr;
 
@@ -880,7 +932,10 @@ void osd_update_video_and_audio(struct mame_display *display)
 	skip_this_frame = skip_next_frame;
 	skip_next_frame = (*skip_next_frame_functions[frameskipper])();
 
-	if (sound_stream && sound_enabled)
+	/* While the debugger has focus the emulation is stopped and no new samples
+	   arrive; updating the stream would just replay its last buffer over and
+	   over, so let the device run dry (silence) instead */
+	if (sound_stream && sound_enabled && !debugger_has_focus)
 		sound_stream_update(sound_stream);
 
 	/* if the visible area has changed, update it */
@@ -947,8 +1002,10 @@ void osd_update_video_and_audio(struct mame_display *display)
 
 	/* if the LEDs have changed, update them */
 	if (display->changed_flags & LED_STATE_CHANGED)
+		if (!pmoptions.headless)
 		sysdep_set_leds(display->led_state);
 
+	if (!pmoptions.headless)
 	osd_poll_joysticks();
 }
 
@@ -958,6 +1015,7 @@ void adjust_bitmap_and_update_display(struct mame_bitmap *srcbitmap,
 {
 	orient_rect(&bounds);
 
+	if (!pmoptions.headless)
 	sysdep_update_display(srcbitmap);
 }
 #endif

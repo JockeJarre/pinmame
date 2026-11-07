@@ -56,14 +56,12 @@ LIBS.xgl        = $(X11LIB) $(JOY_X11_LIBS) -lX11 -lXext $(GLLIBS) -ljpeg
 LIBS.xfx        = $(X11LIB) $(JOY_X11_LIBS) -lX11 -lXext -lglide2x
 LIBS.svgafx     = $(X11LIB) -lvga -lvgagl -lglide2x
 LIBS.openstep	= -framework AppKit
-LIBS.sdl        = $(X11LIB) `$(SDL_CONFIG) --libs`
 LIBS.photon2	= -L/usr/lib -lph -lphrender
 
 CFLAGS.x11      = $(X11INC) $(JOY_X11_CFLAGS) $(XINPUT_DEVICES_CFLAGS)
 CFLAGS.xgl      = $(X11INC) $(JOY_X11_CFLAGS) $(GLCFLAGS)
 CFLAGS.xfx      = $(X11INC) $(JOY_X11_CFLAGS) -I/usr/include/glide
 CFLAGS.svgafx   = -I/usr/include/glide
-CFLAGS.sdl      = $(X11INC) `$(SDL_CONFIG) --cflags` -D_REENTRANT
 CFLAGS.photon2	=
 
 ifdef X11_DGA
@@ -76,7 +74,6 @@ INST.svgalib    = doinstallsuid
 INST.xgl        = doinstallsuid copycab
 INST.xfx        = doinstallsuid
 INST.svgafx     = doinstallsuid
-INST.sdl        = doinstall
 INST.photon2	= doinstall
 
 # handle X11 display method additonal settings
@@ -184,6 +181,10 @@ ifdef LISY_X
 include src/lisy/lisy.mak
 endif
 
+ifdef P2K
+include src/p2k/p2k.mak
+endif
+
 ifdef DEBUG
 DBGDEFS = -DMAME_DEBUG
 else
@@ -201,7 +202,8 @@ MY_CFLAGS = $(CFLAGS) $(IL) $(CFLAGS.$(MY_CPU)) \
 	$(COREDEFS) $(SOUNDDEFS) $(CPUDEFS) $(ASMDEFS) $(DEFS)\
 	$(INCLUDES) $(INCLUDE_PATH)
 
-MY_LIBS = $(LIBS) $(LIBS.$(ARCH)) $(LIBS.$(DISPLAY_METHOD)) -lz
+# -lpthread: the pinHeck driver's Propeller worker thread (src/wpc/pinheck/prop.c)
+MY_LIBS = $(LIBS) $(LIBS.$(ARCH)) $(LIBS.$(DISPLAY_METHOD)) -lz -lpthread
 
 ifdef PROC
 MY_LIBS += -lyaml-cpp -lpinproc -lftdi1 -lusb
@@ -322,23 +324,33 @@ ifdef EFENCE
 MY_LIBS += -lefence
 endif
 
+ifdef REMOTE_DEBUG
+CORE_OBJDIRS += $(OBJ)/remote_debug
+
+src/remote_debug/ui_html.h: src/remote_debug/ui.html
+	$(CC_COMMENT) @echo 'Compiling HTML $< ... $@'
+	xxd -i src/remote_debug/ui.html > src/remote_debug/ui_html.h
+
+$(OBJ)/remote_debug/api_handler.o: src/remote_debug/ui_html.h
+endif
+
 OBJS += $(COREOBJS) $(DRVLIBS) $(OBJ)/unix.$(DISPLAY_METHOD)/osdepend.a
 
-MY_OBJDIRS = $(CORE_OBJDIRS) $(sort $(OBJDIRS))
+MY_OBJDIRS = $(CORE_OBJDIRS) $(sort $(OBJDIRS)) $(P2K_OBJDIRS)
 
 ##############################################################################
 # Begin of the real makefile.
 ##############################################################################
-$(NAME).$(DISPLAY_METHOD): $(OBJS) $(VGMOBJS) $(PROCOBJS) $(LISYOBJS)
+$(NAME).$(DISPLAY_METHOD): $(OBJS) $(VGMOBJS) $(PROCOBJS) $(LISYOBJS) $(P2KOBJS)
 	$(CC_COMMENT) @echo 'Linking $@ ...'
-	$(CC_COMPILE) $(LD) $(LDFLAGS) -o $@ $(OBJS) $(VGMOBJS) $(PROCOBJS) $(LISYOBJS) $(MY_LIBS)
+	$(CC_COMPILE) $(LD) $(LDFLAGS) -o $@ $(OBJS) $(VGMOBJS) $(PROCOBJS) $(LISYOBJS) $(P2KOBJS) $(MY_LIBS)
 
 tools: $(ZLIB) $(OBJDIRS) $(TOOLS)
 
 objdirs: $(MY_OBJDIRS)
 
 $(MY_OBJDIRS):
-	-mkdir $@
+	-mkdir -p $@
 
 xlistdev: src/unix/contrib/tools/xlistdev.c
 	$(CC_COMMENT) @echo 'Compiling $< ...'
@@ -496,7 +508,7 @@ copycab:
 	for j in $$i/*; do $(INSTALL_DATA) $$j $(XMAMEROOT)/$$i; done; done
 
 clean: 
-	rm -fr $(OBJ) $(NAME).* xlistdev src/unix/contrib/cutzlib-1.1.4/libz.a src/unix/contrib/cutzlib-1.1.4/*.o $(TOOLS)
+	rm -fr $(OBJ) $(NAME).* xlistdev src/unix/contrib/cutzlib-1.1.4/libz.a src/unix/contrib/cutzlib-1.1.4/*.o $(TOOLS) src/remote_debug/ui_html.h
 #	cd makedep; make clean
 
 clean68k:

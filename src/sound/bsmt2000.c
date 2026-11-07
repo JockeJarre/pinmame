@@ -1,3 +1,5 @@
+// license:BSD-3-Clause
+
 /**********************************************************************************************
  *
  *   Data East BSMT2000 driver
@@ -8,11 +10,21 @@
  *
  *   Modifications for PINMAME by Steve Ellenoff & Martin Adrian & Carsten Waechter
  *
- *             - TODO: 1)Batman,ST25th and Hook set Mode 0 (after setting Mode 1), but still use reg mapping of Mode 1
- *             -       2)Remove DE Rom loading flag & fix in the drivers themselves
- *             -       3)Command 0x77 could be the sample rate/'pitch' for ADPCM? Or volume like it is now implemented (e.g. sound played when BSMT DMD animation comes on in stereo games: https://www.youtube.com/watch?v=2FtzLzbapZs)
- *             -       4)Alvin G.(Pistol Poker, Worldtour) does not reset/setup-the-mode correctly yet, thus both vgmwrite and the start in here feature hacks for that to setup/init Mode 5.
+ *             - DONE: 1)Batman,ST25th and Hook seemed to set Mode 0 (after setting Mode 1), but used the reg mapping of Mode 1: the reset was taken on the wrong edge, see de2s_bsmtreset_w in wpc/desound.c
+ *             - TODO: 2)Remove DE Rom loading flag & fix in the drivers themselves
+ *             - DONE: 3)Command 0x77 is the depth with which voice 1 modulates voice 0's pitch (the BSMT DMD animation's chirp, https://www.youtube.com/watch?v=2FtzLzbapZs)
+ *             - DONE: 4)Alvin G.(Pistol Poker, Worldtour) did not reset/setup-the-mode: the reset line is wired now (watch_w in wpc/alvgs.c), so the sound program sets Mode 5 itself
  *             - DONE: 5)Monopoly and RCT do never set the right volume (as these are mono only), thus a special hack is necessary to make up for that (right_volume_set)
+ *
+ *   Also includes optional low level emulation (LLE, BSMT2000_LLE below), after MAME's bsmt2000.cpp by Aaron Giles:
+ *   the chip's real program (TMS320C15 mask ROM, bsmt2000.bin, 4K words, CRC c2a265af)
+ *   runs on a TMS320C1x core (src/cpu/tms320c1x) in lock-step with the sound stream. All the
+ *   voice/mode/ADPCM logic then comes from the chip itself, and the
+ *   writer sees the real write-pending/ready handshake (BSMT2000_status_0_r).
+ *   It is more expensive than the HLE, so it is opt-in: the bsmt2000_lle option (pmoptions).
+ *   The firmware is looked up like a MAME device ROM: bsmt2000.bin in bsmt2000.zip (or in a
+ *   bsmt2000/ folder) in the ROM path; it is also accepted inside the game's own zip.
+ *   Without the option, or without the firmware, the high level emulation below is used, unchanged.
  **********************************************************************************************/
 
 #include <stdio.h>
@@ -22,6 +34,17 @@
 
 #include "driver.h"
 #include "../ext/vgm/vgmwrite.h"
+
+#define BSMT2000_LLE 1 // 1: the bsmt2000_lle option can run the real chip program (when bsmt2000.bin is found), 0: HLE only
+
+#if BSMT2000_LLE
+#include "../cpu/tms320c1x/tms320c1x.h"
+#include <stdarg.h>
+#include <zlib.h>
+#ifdef LIBPINMAME
+extern void libpinmame_log_info(const char* format, ...);
+#endif
+#endif
 
 #ifndef MIN
  #define MIN(x,y) ((x)<(y)?(x):(y))
@@ -113,7 +136,8 @@ struct BSMT2000Chip
     struct BSMT2000Voice voice[MAX_VOICES];	/* the voices */
 
 #ifdef PINMAME
-    UINT16      adpcm_77;
+    UINT16      adpcm_delta_init;       /* register 0x76: ADPCM scale factor at start */
+    UINT16      mod_depth;              /* register 0x77: how much voice 1 bends voice 0's pitch, see bsmt2000_update */
     bool        use_de_rom_banking;     /* Flag to turn on Rom Banking support for Data East Games */
     //int         shift_data;             /* Shift integer to apply to samples for changing volume - this is most likely done external to the bsmt chip in the real hardware */
     bool        right_volume_set;       /* Monopoly, RCT do never set right volume although its supposed to be stereo */
@@ -133,6 +157,9 @@ static INT8 * m_vgm_de_rom[MAX_BSMT2000]; // De-scrambled sample-ROM-copy handed
 
 static struct BSMT2000Chip bsmt2000[MAX_BSMT2000];
 static INT64 *scratch;
+#ifdef PINMAME
+static INT32 modbuf[MAX_SAMPLE_CHUNK]; /* voice 1's samples, the modulator of voice 0 (register 0x77) */
+#endif
 
 /***************************************************************************************************
 
@@ -144,6 +171,7 @@ static void reset_compression_flags(struct BSMT2000Chip * const chip)
     struct BSMT2000Voice *voice = &chip->voice[ADPCM_VOICE];
     voice->reg[REG_RATE] = 0;
     voice->reg[REG_BANK] = 0xFE;
+    chip->adpcm_delta_init = 10; // the chip's program sets 0x76 to this on reset
 }
 
 #ifdef PINMAME
@@ -153,6 +181,290 @@ INLINE UINT16 de_rom_bank_remap(UINT16 bank)
     return (bank & 0x07) | ((bank & 0x18) << 1) | ((bank & 0x20) >> 2);
 }
 #endif
+
+#if BSMT2000_LLE
+/**********************************************************************************************
+
+     LOW LEVEL EMULATION: the chip's own program on a TMS320C15
+     (after MAME's src/devices/sound/bsmt2000.cpp by Aaron Giles)
+
+     DSP I/O map:  port 0  read: register select    write: sample ROM address (byte within the bank)
+                   port 1  read: data word (and clears write pending)    write: sample ROM bank
+                   port 2  read: sample ROM byte, in the high byte
+                   port 3  write: left DAC          port 7  write: right DAC
+                   BIO pin: a data word is pending
+
+***********************************************************************************************/
+
+#define BSMT2000_FW_WORDS    0x1000
+#define BSMT2000_FW_CRC      0xc2a265afu
+
+struct BSMT2000LLE
+{
+    struct tms320c1x_state dsp;
+    UINT16      register_select;        /* latched register number, read by the DSP on port 0 */
+    UINT16      write_data;             /* latched data word, read by the DSP on port 1 */
+    UINT16      rom_address;
+    UINT16      rom_bank;
+    INT16       left, right;            /* DAC outputs */
+    bool        write_pending;          /* drives BIO; cleared when the DSP reads the data word */
+    double      cycles_per_sample;      /* DSP cycles per output sample, on average */
+    bool        mono;                   /* mode 0: the program only writes the left DAC */
+    UINT8       mode;                   /* the mode the program runs in (lle_set_mode) */
+    bool        tick;                   /* the program wrote the left DAC, i.e. completed a sample */
+    bool        right_volume_set;       /* a right volume register was written (as the HLE's right_volume_set, see bsmt2000_lle_update) */
+    /* output cadence measurement, to check the stream rate against what the program really does */
+    UINT64      cycles_run;
+    UINT64      cycles_at_first_dac;
+    UINT32      dac_writes;
+    UINT32      missed_writes;
+    void        (*ready_cb)(void);
+};
+
+static bool lle_enabled;                /* the firmware was found and LLE is used */
+static UINT16 lle_firmware[BSMT2000_FW_WORDS]; /* host-endian words */
+static struct BSMT2000LLE lle[MAX_BSMT2000];
+
+/* user visible messages (the choice between LLE and HLE): libpinmame's log, else the error log */
+static void lle_info(const char *fmt, ...)
+{
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+#ifdef LIBPINMAME
+    libpinmame_log_info("%s", buf);
+#else
+    logerror("%s\n", buf);
+#endif
+}
+
+/* bsmt2000.bin is MAME's device ROM: 0x2000 bytes, big-endian words */
+static bool lle_try_load(const char *set)
+{
+    UINT8 raw[BSMT2000_FW_WORDS * 2];
+    UINT32 n, crc;
+    int i;
+    mame_file *f = mame_fopen(set, "bsmt2000.bin", FILETYPE_ROM, 0);
+    if (!f)
+        return false;
+    n = mame_fread(f, raw, sizeof(raw));
+    mame_fclose(f);
+    crc = (n == sizeof(raw)) ? (UINT32)crc32(0, raw, sizeof(raw)) : 0;
+    if (crc != BSMT2000_FW_CRC)
+    {
+        lle_info("BSMT2000: bsmt2000.bin in '%s' has the wrong size or CRC (%u bytes, CRC %08x, expected c2a265af), ignored", set, n, crc);
+        return false;
+    }
+    for (i = 0; i < BSMT2000_FW_WORDS; i++)
+        lle_firmware[i] = (UINT16)((raw[2 * i] << 8) | raw[2 * i + 1]);
+    return true;
+}
+
+static bool lle_load_firmware(void)
+{
+    const struct GameDriver *drv;
+    if (!pmoptions.bsmt2000_lle)
+        return false;
+    if (Machine->sample_rate == 0) // no sound: the DSP would never run (it runs with the stream), and the writer would wait for it forever
+        return false;
+    if (lle_try_load("bsmt2000"))
+        return true;
+    for (drv = Machine->gamedrv; drv; drv = drv->clone_of)
+        if (drv->name && *drv->name && lle_try_load(drv->name))
+            return true;
+    lle_info("BSMT2000: bsmt2000_lle is set, but bsmt2000.bin (CRC c2a265af) was not found in bsmt2000.zip or the game's zip: using the HLE");
+    return false;
+}
+
+static UINT16 lle_io_r(void *param, int port)
+{
+    struct BSMT2000LLE * const l = (struct BSMT2000LLE *)param;
+    switch (port)
+    {
+        case 0:
+            return l->register_select;
+        case 1:
+            l->write_pending = false; // reading the data implicitly clears the write pending flag
+            if (l->ready_cb)
+                l->ready_cb();
+            return l->write_data;
+        case 2:
+        {
+            /* the program expects the sample byte in the high byte */
+            const struct BSMT2000Chip * const chip = &bsmt2000[l - lle];
+            UINT16 bank = l->rom_bank;
+#ifdef PINMAME
+            if (chip->use_de_rom_banking)
+                bank = de_rom_bank_remap(bank);
+#endif
+            if (bank >= chip->total_banks)
+                return 0;
+            return (UINT16)((UINT8)chip->region_base[((UINT32)bank << 16) + l->rom_address] << 8);
+        }
+    }
+    return 0;
+}
+
+static void lle_io_w(void *param, int port, UINT16 data)
+{
+    struct BSMT2000LLE * const l = (struct BSMT2000LLE *)param;
+    switch (port)
+    {
+        case 0: l->rom_address = data; break;
+        case 1: l->rom_bank = data; break;
+        case 3:
+            /* the program writes the right DAC, then the left one, once per sample period: the left write completes a sample */
+            l->left = (INT16)data;
+            if (l->dac_writes++ == 0)
+                l->cycles_at_first_dac = l->cycles_run;
+            l->tick = true;
+            tms320c1x_abort(&l->dsp);
+            break;
+        case 7:
+            l->right = (INT16)data;
+            break;
+    }
+}
+
+static int lle_bio_r(void *param)
+{
+    return ((struct BSMT2000LLE *)param)->write_pending ? 1 : 0;
+}
+
+/* The sample rate the program outputs at in a mode: the length of its sample loop, in DSP cycles,
+   measured on the program itself while idle (with the cycle counts of the core; the loop gets a
+   fraction of a cycle longer on average while it takes register writes). The HLE uses the same
+   rates (set_mode). Modes 2-4 are test modes. 0: unknown mode, keep the current rate. */
+static double lle_mode_cycles(int mode)
+{
+    switch (mode)
+    {
+        case 0: return 249.5;
+        case 1: return 250.5;
+        case 5: return 254.;
+        case 6: return 193.;
+        case 7: return 208.;
+    }
+    return 0.;
+}
+
+static void lle_set_mode(int i, int mode, bool update_stream)
+{
+    struct BSMT2000Chip * const chip = &bsmt2000[i];
+    const double cycles = lle_mode_cycles(mode);
+    if (cycles <= 0.)
+        return;
+    lle[i].cycles_per_sample = cycles;
+    lle[i].mono = (mode == 0);
+    lle[i].mode = (UINT8)mode;
+    chip->sample_rate = chip->clock / 4. / cycles; // the TMS320C1x runs one cycle per 4 input clocks
+    if (update_stream)
+    {
+        stream_set_sample_rate(chip->stream, chip->sample_rate);
+        stream_set_sample_rate(chip->stream + 1, chip->sample_rate);
+    }
+}
+
+/* the program picks its mode at reset from the register select latch (it reads it first thing) */
+static void lle_reset(int i)
+{
+    struct BSMT2000LLE * const l = &lle[i];
+    stream_update(bsmt2000[i].stream, 0);
+    lle_set_mode(i, l->register_select, true);
+    tms320c1x_reset(&l->dsp);
+    logerror("BSMT2000: reset, register select %u, %.1f Hz\n", l->register_select, bsmt2000[i].sample_rate);
+}
+
+static void bsmt2000_lle_update(int num, INT16 **buffer, int length)
+{
+    struct BSMT2000LLE * const l = &lle[num];
+    INT16 * const ldest = buffer[0];
+    INT16 * const rdest = buffer[1];
+    int samp;
+
+    /* One output sample per sample of the program: run it until it completes the next one (its loop
+       length varies by a few cycles from sample to sample, so sampling its DACs at fixed times would now
+       and then repeat or skip one). The stream runs at the program's average rate (lle_set_mode), and
+       the time the program runs is capped, in case it does not output anything (yet). */
+    const int cap = (int)(2. * l->cycles_per_sample);
+    for (samp = 0; samp < length; samp++)
+    {
+        int spent = 0;
+        l->tick = false;
+        while (!l->tick && spent < cap)
+            spent += tms320c1x_execute(&l->dsp, cap - spent);
+        l->cycles_run += spent;
+        ldest[samp] = l->left;
+        /* Mode 0 is mono (only the left DAC is written). Some stereo-mode games never set a right volume
+           (Monopoly, RollerCoaster Tycoon): the chip then really outputs silence on the right, and those
+           mono machines use the left output only. So, as the HLE does, the left output goes to both
+           channels until a right volume register is written (lle_right_volume_reg). */
+        rdest[samp] = (l->mono || !l->right_volume_set) ? l->left : l->right;
+    }
+}
+
+/* the writes the HLE sets right_volume_set on (bsmt2000_reg_write): a PCM voice's right volume, or the ADPCM voice's (modes 0/1) */
+static bool lle_right_volume_reg(int mode, offs_t offset)
+{
+    static const UINT8 voices[8] = { 12, 11, 0, 0, 0, 12, 8, 9 };
+    if (offset < 0x6d)
+        return offset >= regmap[mode][REG_RIGHTVOL] && offset < regmap[mode][REG_LEFTVOL] && offset - regmap[mode][REG_RIGHTVOL] < voices[mode];
+    return mode <= 1 && (offset == 0x6e || offset == 0x74);
+}
+
+static void lle_start(int i, const struct BSMT2000interface *intf)
+{
+    struct BSMT2000LLE * const l = &lle[i];
+    memset(l, 0, sizeof(*l));
+    tms320c1x_init(&l->dsp, lle_firmware, 12, l, lle_io_r, lle_io_w, lle_bio_r);
+    // power-on mode: BSMT2000_sh_start's placeholder (mode 1); every board (Data East/Sega/Stern, Alvin G.)
+    // then sets the game's mode with a reset (lle_reset)
+    l->register_select = bsmt2000[i].last_register;
+    lle_set_mode(i, l->register_select, true);
+    tms320c1x_reset(&l->dsp);
+}
+
+static void lle_stop(int i)
+{
+    const struct BSMT2000LLE * const l = &lle[i];
+    const UINT64 span = l->cycles_run - l->cycles_at_first_dac;
+    logerror("BSMT2000: LLE stopped: %u DAC writes in %llu cycles (%.3f cycles per write, stream: %.3f), %u missed write(s)\n",
+        l->dac_writes, (unsigned long long)l->cycles_run,
+        (l->dac_writes > 1) ? (double)span / (double)(l->dac_writes - 1) : 0., l->cycles_per_sample, l->missed_writes);
+}
+#endif /* BSMT2000_LLE */
+
+int BSMT2000_lle_active(void)
+{
+#if BSMT2000_LLE
+    return lle_enabled;
+#else
+    return 0;
+#endif
+}
+
+void BSMT2000_set_ready_callback(int num, void (*cb)(void))
+{
+#if BSMT2000_LLE
+    if (num >= 0 && num < MAX_BSMT2000)
+        lle[num].ready_cb = cb;
+#endif
+}
+
+/* 1: the chip can take the next register write; the HLE is always ready */
+int BSMT2000_status_0_r(void)
+{
+#if BSMT2000_LLE
+    if (lle_enabled)
+    {
+        stream_update(bsmt2000[0].stream, 0);
+        return lle[0].write_pending ? 0 : 1;
+    }
+#endif
+    return 1;
+}
 
 /**************************************************
     set_mode - set the mode after reset
@@ -168,21 +480,18 @@ static void set_mode(struct BSMT2000Chip * const chip, int i)
     default: // 119 happens sometimes
         break;
 
-    //!! BATMAN,ST25TH,Hook trigger sequence: mode 1 set, 0x7F,0x7E,0x7D,0x7C,0x7B,0x7A,..,0x6D, then mode 0 set but definetly use reg mapping of mode 1
-#ifndef PINMAME
         /* mode 0: 24kHz, 12 channel PCM, 1 channel ADPCM, mono */
     case 0:
-        chip->sample_rate = chip->clock / 1000.;
+        chip->sample_rate = chip->clock / 4. / 249.5;
         chip->stereo = 0;
         chip->voices = 12;
         chip->adpcm = 1;
         chip->mode = 0;
         break;
-#endif
 
         /* mode 1: 24kHz, 11 channel PCM, 1 channel ADPCM, stereo */
     case 1:
-        chip->sample_rate = chip->clock / 1000.;
+        chip->sample_rate = chip->clock / 4. / 250.5;
         chip->stereo = 1;
         chip->voices = 11;
         chip->adpcm = 1;
@@ -194,25 +503,25 @@ static void set_mode(struct BSMT2000Chip * const chip, int i)
 
         /* mode 5: 24kHz, 12 channel PCM, stereo */
     case 5:
-        chip->sample_rate = chip->clock / 1000.;
+        chip->sample_rate = chip->clock / 4. / 254.;
         chip->stereo = 1;
         chip->voices = 12;
         chip->adpcm = 0;
         chip->mode = 5;
         break;
 
-        /* mode 6: 34kHz, 8 channel PCM, stereo */
+        /* mode 6: 34kHz (actually more like 31kHz), 8 channel PCM, stereo */
     case 6:
-        chip->sample_rate = chip->clock / 706.;
+        chip->sample_rate = chip->clock / 4. / 193.;
         chip->stereo = 1;
         chip->voices = 8;
         chip->adpcm = 0;
         chip->mode = 6;
         break;
 
-        /* mode 7: 32kHz, 9 channel PCM, stereo */
+        /* mode 7: 32kHz (actually more like 29kHz), 9 channel PCM, stereo */
     case 7:
-        chip->sample_rate = chip->clock / 750.;
+        chip->sample_rate = chip->clock / 4. / 208.;
         chip->stereo = 1;
         chip->voices = 9;
         chip->adpcm = 0;
@@ -243,7 +552,7 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 	INT16 * const ldest = buffer[0];
 	INT16 * const rdest = buffer[1];
 	struct BSMT2000Voice *voice;
-	int samp, voicenum;
+	int samp, voicenum, modulate;
 
 	/* clear out the accumulator */
 	memset(left, 0, length * sizeof(left[0]));
@@ -280,7 +589,7 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 			/* every 3 samples, we update the ADPCM state */
 			if (frac == 1 || frac == 4)
 			{
-				static const INT32 delta_tab[16] = { 154, 154, 128, 102, 77, 58, 58, 58, 58, 58, 58, 58, 77, 102, 128, 154 };
+				static const INT32 delta_tab[16] = { 154, 154, 128, 102, 77, 58, 58, 58, 58, 58, 58, 58, 77, 102, 128, 154 }; // as the chip's table (at word 0x064 of bsmt2000.bin)
 				INT32 delta, value;
 
 				if(pos >= voice->reg[REG_LOOPEND])
@@ -294,23 +603,23 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 				if (value & 0x8)
 					value |= 0xFFFFFFF0;
 
-				/* compute the delta for this sample */
+				/* compute the delta for this sample: the chip adds +-delta_n/2 in 16.16 and keeps the upper word, so the half step is rounded down on both sides (also for 0) */
 				delta = chip->adpcm_delta_n * value;
 				if (value > 0)
 					delta += chip->adpcm_delta_n >> 1;
 				else
-					delta -= chip->adpcm_delta_n >> 1;
+					delta -= (chip->adpcm_delta_n + 1) >> 1;
 
-				/* add and clamp against the sample */
+				/* add and clamp against the sample (the chip saturates) */
 				chip->adpcm_current += delta;
-				if (chip->adpcm_current > 32767) //!! ??
+				if (chip->adpcm_current > 32767)
 					chip->adpcm_current = 32767;
 				else if (chip->adpcm_current < -32768)
 					chip->adpcm_current = -32768;
 
-				/* adjust the delta multiplier */
+				/* adjust the delta multiplier, clamped to 1..2000 as the chip does */
 				chip->adpcm_delta_n = (chip->adpcm_delta_n * delta_tab[value+8]) >> 6;
-				if (chip->adpcm_delta_n > 2000) //!! ??
+				if (chip->adpcm_delta_n > 2000)
 					chip->adpcm_delta_n = 2000;
 				else if (chip->adpcm_delta_n < 1)
 					chip->adpcm_delta_n = 1;
@@ -361,10 +670,19 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 			voice->reg[REG_RATE] = 0;
 	}
 
+	/* Register 0x77: in modes 0/1 the chip's program multiplies it with voice 1's current sample and adds that to voice 0's
+	   step (mode 1: lt 59; mpy 77; ... add, around word 0x3d0 of bsmt2000.bin; mode 0: lt 55; modes 5-7 don't have it).
+	   So voice 1, usually at volume 0, bends voice 0's pitch: the BSMT logo jingle's chirp (0x77 ramped 0x0200..0x7e00,
+	   voice 1 looping the same sample at twice the rate). Voice 1 is computed first then, to have its samples at hand */
+	modulate = chip->mod_depth != 0 && chip->mode <= 1 && chip->voices > 1;
+	if (modulate)
+		memset(modbuf, 0, length * sizeof(modbuf[0]));
+
 	/* loop over normal voices (8bit, 8kHz mono samples) */
 	for (voicenum = 0; voicenum < chip->voices; voicenum++)
 	{
-		voice = &chip->voice[voicenum];
+		const int vn = modulate && voicenum < 2 ? 1 - voicenum : voicenum; // 1, 0, 2, 3, ... when modulating
+		voice = &chip->voice[vn];
 
 		/* compute the region base */
 		if (voice->reg[REG_BANK] < chip->total_banks)
@@ -379,11 +697,6 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 			if (chip->stereo && !chip->right_volume_set) // Monopoly and RCT feature stereo hardware, but only ever set the left volume
 				rvol = lvol;
 #endif
-			if (chip->adpcm_77 > 0 && rvol == 0 && lvol == 0) //!! is this really correct?
-			{
-				rvol = lvol = chip->adpcm_77;
-			}
-
 			/* loop while we still have samples to generate */
             for (samp = 0; samp < length; samp++)
             {
@@ -399,16 +712,31 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 				left[samp]  += sample * lvol;
 				right[samp] += sample * rvol;
 
-                /* update position */
-                frac += rate;
-                pos += frac >> 11;
-                frac &= 0x7ff;
+				/* check for loop end, as the chip: it advances, reads the sample, then wraps (so the sample past the loop end
+				   is played once), comparing the 16.16 positions as 16bit difference, and keeps the fraction */
+				{
+					const INT16 d = (INT16)(pos - voice->reg[REG_LOOPEND]);
+					if (d > 0 || (d == 0 && frac != 0))
+						pos = (pos + voice->reg[REG_LOOPSTART] - voice->reg[REG_LOOPEND]) & 0xffff;
+				}
 
-				/* check for loop end */
-                if (pos >= voice->reg[REG_LOOPEND])
+                /* update position */
+                if (modulate && vn == 1)
+                    modbuf[samp] = val1 << 8; // the chip reads the raw sample
+                if (modulate && vn == 0)
                 {
-                    pos += voice->reg[REG_LOOPSTART] - voice->reg[REG_LOOPEND]; // looks whacky, but it seems to be correct like this
-                    frac = 0;
+                    // as the chip: ((sample * 0x77) >> 16) * rate >> 16, added to the 16.16 position << 10 (<< 5 here);
+                    // it can exceed the rate, so the position runs backwards then (16bit, wrapping)
+                    const INT32 bend = (((modbuf[samp] * (INT32)(INT16)chip->mod_depth) >> 16) * (INT32)(INT16)rate) >> 16;
+                    const INT32 f = (INT32)frac + (INT32)rate + bend * 32;
+                    pos = (pos + (f >> 11)) & 0xffff;
+                    frac = f & 0x7ff;
+                }
+                else
+                {
+                    frac += rate;
+                    pos = (pos + (frac >> 11)) & 0xffff;
+                    frac &= 0x7ff;
                 }
 			}
 
@@ -453,9 +781,7 @@ static void bsmt2000_update(int num, INT16 **buffer, int _length)
 
 INLINE void init_voice(struct BSMT2000Voice *voice)
 {
-    memset(voice, 0, sizeof(*voice));
- 	voice->reg[REG_LEFTVOL] = 0x7fff;
- 	voice->reg[REG_RIGHTVOL] = 0x7fff;
+    memset(voice, 0, sizeof(*voice)); // the chip's program clears its RAM on reset, so also all volumes
 }
 
 
@@ -477,6 +803,11 @@ int BSMT2000_sh_start(const struct MachineSound *msound)
 
 	/* initialize the chips */
 	memset(&bsmt2000, 0, sizeof(bsmt2000));
+#if BSMT2000_LLE
+	lle_enabled = lle_load_firmware();
+	if (lle_enabled)
+		lle_info("BSMT2000: low level emulation (the chip's own program from bsmt2000.bin)");
+#endif
 	for (i = 0; i < intf->num; i++)
 	{
 		bsmt2000[i].voices = intf->voices[i];
@@ -496,25 +827,30 @@ int BSMT2000_sh_start(const struct MachineSound *msound)
 		bsmt2000[i].use_de_rom_banking = intf->use_de_rom_banking;
 		//bsmt2000[i].shift_data = intf->shift_data;
 		bsmt2000[i].right_volume_set = 0;
-		bsmt2000[i].adpcm_77 = 0;
+		bsmt2000[i].mod_depth = 0;
 #else
 		vol[0] = MIXER(intf->mixing_level[i], MIXER_PAN_LEFT);
 		vol[1] = MIXER(intf->mixing_level[i], MIXER_PAN_RIGHT);
 #endif /* PINMAME */
 
-		bsmt2000[i].sample_rate = intf->baseclock[i] / 1000.;
 		bsmt2000[i].clock = intf->baseclock[i];
 
-		// guess initial mode from the parameters, should be not necessary, but e.g. Alvin G. reset is not wired/emulated yet, thus also no mode set!
-		bsmt2000[i].last_register = (bsmt2000[i].voices == 11) ? 1 : 5;
+		// the chip only runs once the board releases its reset, which sets the mode the game selected (BSMT2000_sh_reset);
+		// until then all voices are silent, so mode 1 is just a placeholder
+		bsmt2000[i].last_register = 1;
+		bsmt2000[i].sample_rate = bsmt2000[i].clock / 4. / 250.5;
 		bsmt2000[i].mode = bsmt2000[i].last_register;
 
 		/* create the stream */
-		bsmt2000[i].stream = stream_init_multi(2, stream_name_ptrs, vol, bsmt2000[i].sample_rate, i, bsmt2000_update);
+		bsmt2000[i].stream = stream_init_multi(2, stream_name_ptrs, vol, bsmt2000[i].sample_rate, i,
+#if BSMT2000_LLE
+			lle_enabled ? bsmt2000_lle_update :
+#endif
+			bsmt2000_update);
 		if (bsmt2000[i].stream == -1)
 			return 1;
 
-		m_reg_vgm[i] = 0; //!!?
+		m_reg_vgm[i] = bsmt2000[i].last_register; // a reset before any register write then records the placeholder mode too
 		m_vgm_idx[i] = vgm_open(VGMC_BSMT2000, intf->baseclock[i]);
 #ifdef PINMAME
 		if (intf->use_de_rom_banking)
@@ -559,13 +895,11 @@ int BSMT2000_sh_start(const struct MachineSound *msound)
 		init_all_voices(&bsmt2000[i]);
 		reset_compression_flags(&bsmt2000[i]);
 		set_mode(&bsmt2000[i], i);
-
-		// Record the initial mode into the VGM stream so the later-on used player employs the right
-		// register mapping/sample rate from the start. DE games (re-)issue this via BSMT2000_sh_reset(),
-		// but Alvin G. games whose reset is not wired/emulated yet (setting mode 5), would default to the
-		// wrong default mode and wrongly decode every register write (=garbled exported audio).
-		// Also note that this needs a patch in vgmwrite to make time 0 vgm writes work! (search for PinMAME)
-		vgm_write(m_vgm_idx[i], 0x01, 0x00, bsmt2000[i].last_register & 0x7f);
+#if BSMT2000_LLE
+		if (lle_enabled)
+			lle_start(i, intf);
+#endif
+		// (the VGM stream gets the mode when the board resets the chip, see BSMT2000_sh_reset)
 	}
 
 	/* allocate memory */
@@ -593,6 +927,14 @@ void BSMT2000_sh_stop(void)
 		free(scratch);
 	scratch = NULL;
 
+#if BSMT2000_LLE
+	if (lle_enabled)
+		for (i = 0; i < MAX_BSMT2000; i++)
+			if (bsmt2000[i].clock > 0.)
+				lle_stop(i);
+	lle_enabled = false;
+#endif
+
 	// free the de-scrambled VGM sample ROM copy
 	for (i = 0; i < MAX_BSMT2000; i++)
 		if (m_vgm_de_rom[i])
@@ -614,8 +956,17 @@ void BSMT2000_sh_reset(void)
 	for (i = 0; i < MAX_BSMT2000; i++)
 	{
 		vgm_write(m_vgm_idx[i], 0x01, 0x00, m_reg_vgm[i] & 0x7f);
+#if BSMT2000_LLE
+		if (lle_enabled)
+		{
+			if (bsmt2000[i].clock > 0.)
+				lle_reset(i);
+			continue;
+		}
+#endif
 		init_all_voices(&bsmt2000[i]);
 		reset_compression_flags(&bsmt2000[i]);
+		bsmt2000[i].mod_depth = 0; // the chip's program clears its RAM on reset, 0x77 included
 		set_mode(&bsmt2000[i],i);
 	}
 }
@@ -639,6 +990,13 @@ static void bsmt2000_reg_write(struct BSMT2000Chip * const chip, offs_t offset, 
 
     /* force an update */
     stream_update(chip->stream, 0);
+
+    if (offset == 0x77) /* modulation depth (used in modes 0 and 1, see bsmt2000_update) */
+    {
+        COMBINE_DATA(&chip->mod_depth);
+        LOG(("REG_MOD77=%04X\n", chip->mod_depth));
+        return;
+    }
 
     if (offset < 0x6d) /* regular/non-adpcm voice */
     {
@@ -669,8 +1027,7 @@ static void bsmt2000_reg_write(struct BSMT2000Chip * const chip, offs_t offset, 
 	    if (regindex == REG_RIGHTVOL)
 		    chip->right_volume_set = 1;
 
-	    if (regindex == REG_CURRPOS)
-		    voice->fraction = 0;
+	    // writing the position keeps the fraction as-is, same as on the real chip
 #endif
     }
     else if(chip->adpcm) /* update parameters for compressed voice */
@@ -706,8 +1063,14 @@ static void bsmt2000_reg_write(struct BSMT2000Chip * const chip, offs_t offset, 
 				{
 					/* reset adpcm values also */
 					chip->adpcm_current = 0;
-					chip->adpcm_delta_n = 10;
+					chip->adpcm_delta_n = chip->adpcm_delta_init;
 				}
+				break;
+
+			//INITIAL SCALE FACTOR, copied on start (10 after reset)
+			case 0x76:
+				COMBINE_DATA(&chip->adpcm_delta_init);
+				LOG(("REG_ADPCM_DELTA=%04X\n", chip->adpcm_delta_init));
 				break;
 
 			//RIGHT CHANNEL VOLUME
@@ -727,14 +1090,6 @@ static void bsmt2000_reg_write(struct BSMT2000Chip * const chip, offs_t offset, 
  				COMBINE_DATA(&voice->reg[REG_CURRPOS]);
                 LOG(("REG_CURRPOS=%04X voice->loop_stop_position=%08X\n", voice->reg[REG_CURRPOS], voice->reg[REG_LOOPEND]));
 				voice->fraction = 0;
-				break;
-
- 			case 0x77:
-				//for example MONOPOLY & RCT (and no other ADPCM commands it seems), STAR WARS, APOLLO13 trigger a lot of: 0x77 (data = 0)?
-				//for example ID4 uses 0x77 also with increasing/decreasing data input (1280 up to 32000), so maybe sample rate/'pitch' for ADPCM? Or really volume?
-				//Tommy even uses 0x77 without using any other ADPCM commands
-				COMBINE_DATA(&chip->adpcm_77);
-				LOG(("REG_ADPCM77=%04X\n", chip->adpcm_77));
 				break;
 
 			//LEFT CHANNEL VOLUME
@@ -765,5 +1120,28 @@ WRITE16_HANDLER( BSMT2000_data_0_w )
 	m_reg_vgm[0] = offset;
 	vgm_write(m_vgm_idx[0], 0x00, data, offset & 0x7f);
 
+#if BSMT2000_LLE
+	if (lle_enabled)
+	{
+		struct BSMT2000LLE * const l = &lle[0];
+		/* let the program catch up to now, then latch the register number and the data word */
+		stream_update(bsmt2000[0].stream, 0);
+		l->register_select = (UINT16)offset;
+		COMBINE_DATA(&l->write_data);
+		if (lle_right_volume_reg(l->mode, offset))
+			l->right_volume_set = true;
+		if (l->write_pending)
+			l->missed_writes++;
+		l->write_pending = true;
+		return;
+	}
+#endif
 	bsmt2000_reg_write(&bsmt2000[0], offset, data, mem_mask);
 }
+
+#if BSMT2000_LLE
+/* The TMS320C1x core is only used by the BSMT2000, so it is compiled as part of this file: no
+   build script (makefiles, CMake, Visual Studio projects) has to list it. Keep this include last,
+   as the core defines short register macros (OV, DP, ARP, ...). */
+#include "../cpu/tms320c1x/tms320c1x.c"
+#endif

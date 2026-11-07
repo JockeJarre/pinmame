@@ -3,6 +3,7 @@
 /***********************************************/
 #include <stdarg.h>
 #include <math.h>
+#include <ctype.h>
 #include "driver.h"
 #include "sim.h"
 #include "snd_cmd.h"
@@ -10,6 +11,9 @@
 #include "core.h"
 #include "video.h"
 #include "bulb.h"
+#ifdef REMOTE_DEBUG
+#include "remote_debug/remote_debug.h"
+#endif
 
 #ifdef PROC_SUPPORT
  #include "p-roc/p-roc.h"
@@ -79,8 +83,8 @@ void vp_setDIP(int bank, int value) { }
 #if defined(VPINMAME) || defined(LIBPINMAME)
   #include "vpintf.h"
   extern int g_fHandleKeyboard, g_fHandleMechanics;
-  extern char g_fShowWinDMD;
-  extern char g_fShowPinDMD; /* pinDMD */
+  extern int g_fShowWinDMD;
+  extern int g_fShowPinDMD; /* pinDMD */
   extern int time_to_reset;  /* pinDMD */
   extern int g_fDumpFrames;
   extern void OnSolenoid(int nSolenoid, int IsActive);
@@ -88,6 +92,7 @@ void vp_setDIP(int bank, int value) { }
 #else
   int g_fHandleKeyboard = 1;
   int g_fHandleMechanics = 0xff;
+  int g_fDumpFrames = 0; /* toggled with F6, see usrintrf.c */
   #define OnSolenoid(nSolenoid, IsActive)
   #define OnStateChange(nChange)
   #define vp_getSolMask64() ((UINT64)(-1))
@@ -744,6 +749,17 @@ typedef struct {
   UINT32* dmdFIRBuffer;       // Shaded frame computed from raw frames
   float*  luminanceFrame;     // linear luminance computed from PWM frames, for rendering (result may change and can't be considered as stable across PinMame builds)
   unsigned int lumFrameId;    // incresaed when the luminanceFrame is updated
+
+  // Published for a client thread by core_dmd_publish: per frame type a triple buffer (see core_dmd_update_pwm)
+  float*  pubLum[3];          // luminance frames
+  unsigned int pubLumId[3];   // their lumFrameId
+  UINT8*  pubRaw[3];          // bitplane frames
+  unsigned int pubRawId[3];   // their rawFrameId
+  volatile int pubLumState, pubRawState;   // index of the middle buffer, | 4 when the emulation thread left a new frame in it
+  int     pubLumBack, pubRawBack;          // the emulation thread's buffer
+  int     pubLumFront, pubRawFront;        // the client thread's buffer
+  volatile int pubLumWanted, pubRawWanted; // set by a client thread: publish this frame type from then on
+  unsigned int pubLumLast, pubRawLast;     // ids published last
 } core_tDMDPWMState;
 
 /*-------------------
@@ -763,8 +779,13 @@ static struct {
   UINT8     lastLampMatrix[CORE_MAXLAMPCOL];
   int       lastGI[CORE_MAXGI];
   UINT64    lastSol;
+  UINT32    lastSolHigh;   // solenoids 65 and up, see core_getAllSolHigh
+  double    lastPwmPublish;// emulated time of the last core_publish_pwm_outputs
+  volatile int pwmWanted;  // CORE_PWM_WANT_xxx: the output categories a client thread read, see core_want_pwm_outputs
   // DMD state for PWM integration
   core_tDMDPWMState* dmdStates[16]; // DMD: state structure where frames are pushed and kept to be processed for luminance/identify evaluation
+  // Outputs whose value the driver writes itself (CORE_MODOUT_NONE, see core_set_pwm_output_driver_value)
+  UINT8 pwm_driver_value[(CORE_MODOUT_MAX + 7) / 8];
   // Segment display handling
   #if defined(VPINMAME) || defined(LIBPINMAME)
     int       hasDmdOrVideo;              // Flag to indicate if the current game has a DMD or Video display
@@ -772,6 +793,8 @@ static struct {
     UINT8     disp_num_segs[64];          // number of individual segments per display
     UINT16    seg_data2[CORE_SEGCOUNT];   // 
     core_segOverallLayout_t alpha_layout; // identify some of the segment displays layouts (incomplete driver support)
+    int       alpha_seg16s;               // the displays are CORE_SEG16S: convert them for alpha_layout's renderers (see core_seg_alpha_frame_data)
+    UINT16    alpha_seg_data[CORE_SEGCOUNT]; // the converted segments
   #endif
   #if defined(VPINMAME)
     UINT8   vpm_dmd_last_dmd[DMD_MAXY * DMD_MAXX];
@@ -978,27 +1001,32 @@ static PALETTE_INIT(core) {
 // DMD display handler
 //
 
-// Render to internal display, using provided luminance, if there is a visible display (PinMAME always, and VPinMAME when its window is shown)
-// FIXME apply colors LUT ?
 #if defined(PINMAME) || defined(VPINMAME)
-static void core_dmd_render_internal(struct mame_bitmap *bitmap, const int x, const int y, const int width, const int height, const float* const dmdDotLum, const int apply_aa) {
+// Games rendered with 16 shades (raw DMD levels) are never colorized, the others map their 4 identified shades to the 4 user colors
+static int core_dmd_has_16_shades(void) {
+  return (core_gameData->gen & (GEN_SAM | GEN_SPA | GEN_ALVG_DMD2 | GEN_PINHECK | GEN_SPIKE1)) || (strncasecmp(Machine->gamedrv->name, "smb", 3) == 0) || (strncasecmp(Machine->gamedrv->name, "cueball", 7) == 0);
+}
+
+// Render to internal display, using provided luminance, if there is a visible display (PinMAME always, and VPinMAME when its window is shown)
+// If dmdDotRaw is provided (colorize option), dots use the 4 colorized palette entries selected by the identified shade instead of the luminance
+static void core_dmd_render_internal(struct mame_bitmap *bitmap, const int x, const int y, const int width, const int height, const float* const dmdDotLum, const UINT8* const dmdDotRaw) {
   #define DMD_OFS(row, col) ((row)*width + (col))
   BMTYPE **lines = ((BMTYPE **)bitmap->line) + (y * locals.displaySize);
   for (int ii = 0; ii < height; ii++) {
     BMTYPE *line = (*lines) + (x * locals.displaySize);
     for (int jj = 0; jj < width; jj++) {
-      *line = DMD_PAL(dmdDotLum[DMD_OFS(ii, jj)]);
+      *line = dmdDotRaw ? (BMTYPE)(COL_DMDOFF + dmdDotRaw[DMD_OFS(ii, jj)]) : DMD_PAL(dmdDotLum[DMD_OFS(ii, jj)]);
       line += locals.displaySize;
     }
     lines += locals.displaySize;
   }
-  // Apply antialiasing if enabled, or clear pixels between dots otherwise, do via a triangle filter:
+  // Fill the pixels between the dots, if antialiasing is enabled, via a triangle filter:
   // 1 2 1
   // 2 4 2
   // 1 2 1
-  // Note that pixels which are off are always counted as contributing 0 (so NOT the 'off-color/brightness')
+  // Otherwise they are simply left black. Note that pixels which are off are always counted as contributing 0 (so NOT the 'off-color/brightness')
   assert((locals.displaySize == 1) || (locals.displaySize == 2));
-  if (apply_aa && locals.displaySize == 2) {
+  if (pmoptions.dmd_antialias && locals.displaySize == 2) {
     lines = ((BMTYPE **)bitmap->line) + (y * 2);
     for (int ii = 0; ii < height * 2 - 1; ii++) {
       const int pi = (ii - 1) >> 1;
@@ -1074,7 +1102,7 @@ static void core_dmd_send_vpm(const int width, const int height, const float* co
   const float perc33 = hasPercents ? (float)pmoptions.dmd_perc33 : 33.f;
   const float perc66 = hasPercents ? (float)pmoptions.dmd_perc66 : 67.f;
 
-  if ((core_gameData->gen & (GEN_SAM | GEN_SPA | GEN_ALVG_DMD2)) || (strncasecmp(Machine->gamedrv->name, "smb", 3) == 0) || (strncasecmp(Machine->gamedrv->name, "cueball", 7) == 0)) {
+  if (core_dmd_has_16_shades()) { // pinHeck: the raw DMD's 16 levels
     // Backward compatibility: 16 shades mode has no colorization and fixed lighting levels ranging from 0 to 100
     //static const UINT8 levelgts3[16] = {0/*5*/, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100}; // GTS3 and AlvinG brightness seems okay
     //static const UINT8 levelsam[16]  = {0/*5*/, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100}; // SAM brightness seems okay
@@ -1089,7 +1117,7 @@ static void core_dmd_send_vpm(const int width, const int height, const float* co
     }
   }
   else {
-    #define LERP(p, a, b) (UINT8)((a) + (p) * ((b) - (a)))
+    #define LERP(p, a, b) (UINT8)((a) + (p) * ((b) - (a)) + 0.5f) // rounded
     if (pmoptions.dmd_colorize) {
       const UINT32 cols[4] = {
          (pmoptions.dmd_red0) | (pmoptions.dmd_green0 << 8) | (pmoptions.dmd_blue0 << 16),
@@ -1171,16 +1199,55 @@ void core_dmd_send_dmddevice(const int width, const int height, const float* con
 
 // Save main DMD bitplane and raw frames to a capture file
 // DMD frame capture can be enabled either by:
-// - setting g_fDumpFrames (not supported as it is only available through keyboard input which VPinMame doesn't have)
+// - the -dmd_dump_dir option (PinMAME, libpinmame)
+// - setting g_fDumpFrames with F6 (PinMAME, writes to DmdDump/ in the current directory; not supported in VPinMame as it doesn't get the keyboard input)
 // - setting g_fShowPinDMD (enable dmddevice.dll) and g_fShowWinDMD (enable VPinMAME rendering) simultaneously
 // TODO this is not yet implemented for Strikes N' Spares which has 2 DMDs
-#ifdef VPINMAME
+#if defined(VPINMAME) || defined(PINMAME) || defined(LIBPINMAME)
+#if defined(VPINMAME)
+#define DMD_DUMP_PATH_MAX MAX_PATH /* Windows: leave the Win32 constant itself alone */
+#else
+#include <limits.h>
+#ifndef PATH_MAX
+#define PATH_MAX 4096 /* POSIX doesn't guarantee limits.h defines this */
+#endif
+#define DMD_DUMP_PATH_MAX PATH_MAX
+#endif
+/* True while nothing has been written to this run's dump yet. -dmd_dump_dir
+   starts a fresh file rather than appending: a dump's timestamps count from
+   emulation start, so a second run appended to a first makes them run backwards
+   half way through the file, which no reader of the format expects. The
+   VPinMAME DmdDump path below keeps its historic append */
+static int dmd_dump_txtFresh = 1;
+static int dmd_dump_rawFresh = 1;
+
 static void core_dmd_capture_frame(const int width, const int height, const UINT8* const dmdDotRaw, const int rawFrameCount, const UINT8* const rawFrame) {
   const int isStrikeNSpares = strncasecmp(Machine->gamedrv->name, "snspare", 7) == 0;
-  if (!isStrikeNSpares && (g_fDumpFrames || (g_fShowPinDMD && g_fShowWinDMD))) {
+  const int isOptionDump = pmoptions.dmd_dump_dir && pmoptions.dmd_dump_dir[0];
+  char DumpFilename[DMD_DUMP_PATH_MAX];
+  UINT32 tick;
+  int len;
+
+  if (isStrikeNSpares)
+    return;
+
+  if (isOptionDump) {
+    static int warned = 0;
+    len = snprintf(DumpFilename, sizeof(DumpFilename), "%s/%s",
+             pmoptions.dmd_dump_dir, Machine->gamedrv->name);
+    if (len < 0 || len >= (int)sizeof(DumpFilename)) {
+      if (!warned) {
+        fprintf(stderr, "core_dmd_capture_frame: dmd_dump_dir path too long, dump skipped\n");
+        fflush(stderr);
+        warned = 1;
+      }
+      return;
+    }
+  }
+#ifdef VPINMAME
+  else if (g_fDumpFrames || (g_fShowPinDMD && g_fShowWinDMD)) {
+    /* unchanged: next to the DLL, in DmdDump/ */
     char *ptr;
-    char DumpFilename[MAX_PATH];
-    const DWORD tick = GetTickCount();
     #ifndef _WIN64
       const HINSTANCE hInst = GetModuleHandle("VPinMAME.dll");
     #else
@@ -1190,56 +1257,82 @@ static void core_dmd_capture_frame(const int width, const int height, const UINT
     ptr = strrchr(DumpFilename, '\\');
     strcpy_s(ptr + 1, 11, "DmdDump\\");
     strcat_s(DumpFilename, MAX_PATH, Machine->gamedrv->name);
+  }
+#elif defined(PINMAME) && !defined(LIBPINMAME)
+  else if (g_fDumpFrames) {
+    /* F6: like VPinMAME, into an existing DmdDump/ folder, appending */
+    snprintf(DumpFilename, sizeof(DumpFilename), "DmdDump/%s", Machine->gamedrv->name);
+  }
+#endif
+  else
+    return;
 
-    // Additional single bitplane raw frames for GTS3, WPC and Alvin G.
-    if (rawFrameCount != 0) {
-      FILE* fr;
-      char RawFilename[MAX_PATH];
-      strcpy_s(RawFilename, MAX_PATH, DumpFilename);
-      strcat_s(RawFilename, MAX_PATH, ".raw");
-      fr = fopen(RawFilename, "rb");
-      if (fr) {
-        fclose(fr);
-        fr = fopen(RawFilename, "ab");
-      }
-      else {
-        fr = fopen(RawFilename, "ab");
-        if (fr) {
-          fputc(0x52, fr);
-          fputc(0x41, fr);
-          fputc(0x57, fr);
-          fputc(0x00, fr);
-          fputc(0x01, fr);
-          fputc(width, fr);
-          fputc(height, fr);
-          fputc(rawFrameCount, fr);
-        }
-      }
-      if (fr) {
-        fwrite(&tick, 1, 4, fr);
-        fwrite(rawFrame, 1, (width * height / 8 * rawFrameCount), fr);
-        fclose(fr);
-      }
+  /* milliseconds since emulation start */
+  tick = (UINT32)(timer_get_time() * 1000.0);
+
+  // Additional single bitplane raw frames for GTS3, WPC and Alvin G.
+  if (rawFrameCount != 0) {
+    static int rawWarned = 0;
+    FILE* fr;
+    char RawFilename[DMD_DUMP_PATH_MAX];
+    strncpy(RawFilename, DumpFilename, DMD_DUMP_PATH_MAX);
+    strncat(RawFilename, ".raw", DMD_DUMP_PATH_MAX - strlen(RawFilename) - 1);
+    int needHeader = 0;
+    if (isOptionDump && dmd_dump_rawFresh) {
+      fr = fopen(RawFilename, "wb");
+      needHeader = 1;
     }
+    else {
+      FILE* probe = fopen(RawFilename, "rb");
+      if (probe) fclose(probe); else needHeader = 1;
+      fr = fopen(RawFilename, "ab");
+    }
+    if (fr) {
+      dmd_dump_rawFresh = 0;
+      if (needHeader) {
+        fputc(0x52, fr);
+        fputc(0x41, fr);
+        fputc(0x57, fr);
+        fputc(0x00, fr);
+        fputc(0x01, fr);
+        fputc(width, fr);
+        fputc(height, fr);
+        fputc(rawFrameCount, fr);
+      }
+      fwrite(&tick, 1, 4, fr);
+      fwrite(rawFrame, 1, (width * height / 8 * rawFrameCount), fr);
+      fclose(fr);
+    } else if (!rawWarned) {
+      fprintf(stderr, "core_dmd_capture_frame: cannot open %s, raw dump skipped\n", RawFilename);
+      fflush(stderr);
+      rawWarned = 1;
+    }
+  }
 
-    // Bitplane frame combined from PWM pattern of raw frames
-    static UINT8 lastCapture[DMD_MAXX * DMD_MAXY] = { 0 };
-    if (memcmp(lastCapture, dmdDotRaw, width * height) != 0)
-    {
-       FILE *f;
-       memcpy(lastCapture, dmdDotRaw, width * height);
-       strcat_s(DumpFilename, MAX_PATH, ".txt");
-       f = fopen(DumpFilename, "a");
-       if (f) {
-          fprintf(f, "0x%08x\n", tick);
-          for (int jj = 0; jj < height; jj++) {
-             for (int ii = 0; ii < width; ii++)
-                fprintf(f, "%01x", dmdDotRaw[jj * width + ii]);
-             fprintf(f, "\n");
-          }
-          fprintf(f, "\n");
-          fclose(f);
-       }
+  // Bitplane frame combined from PWM pattern of raw frames
+  static UINT8 lastCapture[DMD_MAXX * DMD_MAXY] = { 0 };
+  if (memcmp(lastCapture, dmdDotRaw, width * height) != 0)
+  {
+    static int txtWarned = 0;
+    FILE *f;
+    memcpy(lastCapture, dmdDotRaw, width * height);
+    strncat(DumpFilename, ".txt", DMD_DUMP_PATH_MAX - strlen(DumpFilename) - 1);
+    f = fopen(DumpFilename, isOptionDump && dmd_dump_txtFresh ? "w" : "a");
+    if (f) {
+      dmd_dump_txtFresh = 0;
+      fprintf(f, "0x%08x\n", tick);
+      for (int jj = 0; jj < height; jj++) {
+        for (int ii = 0; ii < width; ii++)
+          fprintf(f, "%01x", dmdDotRaw[jj * width + ii]);
+        fprintf(f, "\n");
+      }
+      fprintf(f, "\n");
+      fclose(f);
+    } else if (!txtWarned) {
+      fprintf(stderr, "core_dmd_capture_frame: cannot open %s, dump skipped"
+                      " (does the directory exist and is it writable?)\n", DumpFilename);
+      fflush(stderr);
+      txtWarned = 1;
     }
   }
 }
@@ -1254,7 +1347,13 @@ static void core_dmd_video_update(struct mame_bitmap *bitmap, const struct recta
       const float* lumFrame = g_fDmdMode == 0 ? lumFrame = core_dmd_update_pwm(layout, &lumFrameId) : NULL;
       core_dmd_send_libpinmame(layout, lumFrame, rawFrame);
     }
-	
+    if (pmoptions.dmd_dump_dir && pmoptions.dmd_dump_dir[0] && layout->length >= 128) {
+      unsigned int rawFrameId;
+      const UINT8* rawFrame = core_dmd_update_identify(layout, &rawFrameId);
+      (void)rawFrameId; /* only rawFrame is needed here */
+      core_dmd_capture_frame(layout->length, layout->start, rawFrame, 0, NULL);
+    }
+
   #elif defined(VPINMAME)
     if (layout->length >= 128) { // Up to 2 main DMDs (1 for all games, except Strikes N' Spares which has 2 but VPM is buggy in this situation)
       // For GTS3, WPC and Alvin G. 2 also store raw single bitplane frame for backward compatibility with colorization plugins
@@ -1279,7 +1378,7 @@ static void core_dmd_video_update(struct mame_bitmap *bitmap, const struct recta
       const UINT8* rawFrame = core_dmd_update_identify(layout, &rawFrameId);
       const float* lumFrame = core_dmd_update_pwm(layout, &lumFrameId);
       // FIXME check for VPinMame window hidden/shown state, and do not render if hidden
-      core_dmd_render_internal(bitmap, layout->left, layout->top, layout->length, layout->start, lumFrame, pmoptions.dmd_antialias && !(layout->type & CORE_DMDNOAA));
+      core_dmd_render_internal(bitmap, layout->left, layout->top, layout->length, layout->start, lumFrame, (pmoptions.dmd_colorize && layout->length >= 128 && !core_dmd_has_16_shades()) ? rawFrame : NULL);
       core_dmd_capture_frame(layout->length, layout->start, rawFrame, g_raw_dmd_frame_count, raw_dmd_frames);
       core_dmd_send_vpm(layout->length, layout->start, lumFrame, rawFrame);
       core_dmd_send_dmddevice(layout->length, layout->start, lumFrame, rawFrame, layout->top != 0);
@@ -1288,7 +1387,15 @@ static void core_dmd_video_update(struct mame_bitmap *bitmap, const struct recta
   #elif defined(PINMAME)
     unsigned int lumFrameId;
     const float* lumFrame = core_dmd_update_pwm(layout, &lumFrameId);
-    core_dmd_render_internal(bitmap, layout->left, layout->top, layout->length, layout->start, lumFrame, pmoptions.dmd_antialias && !(layout->type & CORE_DMDNOAA));
+    unsigned int colRawFrameId;
+    const UINT8* colRawFrame = (pmoptions.dmd_colorize && layout->length >= 128 && !core_dmd_has_16_shades()) ? core_dmd_update_identify(layout, &colRawFrameId) : NULL;
+    core_dmd_render_internal(bitmap, layout->left, layout->top, layout->length, layout->start, lumFrame, colRawFrame);
+    if (((pmoptions.dmd_dump_dir && pmoptions.dmd_dump_dir[0]) || g_fDumpFrames) && layout->length >= 128) {
+      unsigned int rawFrameId;
+      const UINT8* rawFrame = core_dmd_update_identify(layout, &rawFrameId);
+      (void)rawFrameId; /* only rawFrame is needed here */
+      core_dmd_capture_frame(layout->length, layout->start, rawFrame, 0, NULL);
+    }
 
   #endif
 }
@@ -1436,6 +1543,12 @@ core_segOverallLayout_t layoutAlphanumericFrame(UINT64 gen, UINT8 total_disp, UI
 			layout = CORE_SEGLAYOUT_2x20Alpha;
 			break;
 
+		// Stern SPIKE 1's ELG titles (Transformers/Avengers The Pin): one line of 16 CORE_SEG16S characters, shown on the upper row (see core_seg_alpha_frame_data)
+		case GEN_SPIKE1:
+			if (total_disp == 1 && disp_num_segs[0] == 16)
+				layout = CORE_SEGLAYOUT_2x16Alpha;
+			break;
+
 		//!! unsupported so far:
 		// astro
 		case GEN_ASTRO:
@@ -1456,7 +1569,7 @@ static void core_seg_video_update(struct mame_bitmap* bitmap, const struct recta
    #ifdef PROC_SUPPORT
       static UINT16 proc_top[16];
       static UINT16 proc_bottom[16];
-      const int char_width = locals.segData[layout->type & 0x0f].cols + 1;
+      const int char_width = locals.segData[layout->type & CORE_SEGALL].cols + 1; // same index as the advance below
    #endif
    const int useDimmedSeg = coreGlobals.nAlphaSegs && (options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS));
          int left = layout->left * (locals.segData[layout->type & CORE_SEGMASK].cols + 1) / 2;
@@ -1537,6 +1650,25 @@ static void core_seg_video_update(struct mame_bitmap* bitmap, const struct recta
    #endif
 }
 
+#if defined(VPINMAME) || defined(LIBPINMAME)
+// The segments for alpha_layout's renderers (usbalphanumeric.h, dmddevice), which take CORE_SEG16 bits: CORE_SEG16S (Stern SPIKE 1's
+// ELG titles) splits the top and bottom lines and has the middle left in bit 15, so it is converted
+static UINT16* core_seg_alpha_frame_data() {
+   // CORE_SEG16 bit for each CORE_SEG16S bit (matches core_ascii2seg16 / core_ascii2seg16s for all printable characters)
+   static const UINT16 seg16s_to_seg16[16] = { 0x0001, 0x0001, 0x0002, 0x0004, 0x0008, 0x0008, 0x0010, 0x0020, 0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x0040 };
+   if (!locals.alpha_seg16s)
+      return coreGlobals.drawSeg;
+   for (int i = 0; i < CORE_SEGCOUNT; i++) {
+      UINT16 seg = 0;
+      for (int bits = coreGlobals.drawSeg[i], k = 0; bits; k++, bits >>= 1)
+         if (bits & 1)
+            seg |= seg16s_to_seg16[k];
+      locals.alpha_seg_data[i] = seg;
+   }
+   return locals.alpha_seg_data;
+}
+#endif
+
 #ifdef VPINMAME
 extern void dmddeviceRenderAlphanumericFrame(core_segOverallLayout_t layout, UINT16* seg_data, UINT16* seg_data2);
 static void core_seg_send_dmddevice() {
@@ -1545,7 +1677,7 @@ static void core_seg_send_dmddevice() {
       // Port of legacy hack needed for Medusa that would call updateDisplay twice, once with the default display (4x7 and 2x2) then once for the additional display (3x2)
       // Now, all of these are processed at once, but we still need to copy the data for external dmddevice.dll backward compatibility
       memcpy(locals.seg_data2, coreGlobals.drawSeg + 4 * 7 + 2 * 2, 3 * 2 * sizeof(UINT16));
-      dmddeviceRenderAlphanumericFrame(locals.alpha_layout, coreGlobals.drawSeg, locals.seg_data2);
+      dmddeviceRenderAlphanumericFrame(locals.alpha_layout, core_seg_alpha_frame_data(), locals.seg_data2);
    }
 }
 #endif
@@ -1555,7 +1687,7 @@ static void core_seg_render_dmd() {
    // Render segments into a virtual DMD (at the moment only to pass easily to VP, e.g. tournament mode verification)
    memset(AlphaNumericFrameBuffer, 0, sizeof(AlphaNumericFrameBuffer));
    switch (locals.alpha_layout) {
-   case CORE_SEGLAYOUT_2x16Alpha: _2x16Alpha(coreGlobals.drawSeg); break;
+   case CORE_SEGLAYOUT_2x16Alpha: _2x16Alpha(core_seg_alpha_frame_data()); break;
    case CORE_SEGLAYOUT_2x20Alpha: _2x20Alpha(coreGlobals.drawSeg); break;
    case CORE_SEGLAYOUT_2x7Alpha_2x7Num: _2x7Alpha_2x7Num(coreGlobals.drawSeg); break;
    case CORE_SEGLAYOUT_2x7Alpha_2x7Num_4x1Num: _2x7Alpha_2x7Num_4x1Num(coreGlobals.drawSeg); break;
@@ -1580,8 +1712,12 @@ static void core_seg_render_dmd() {
    #ifdef VPINMAME
       g_raw_dmdx = 128;
       g_raw_dmdy = 32;
+      // Shade 3 is the only one the segment renderer draws (for now), so this is really just 0 or 100.
+      // An unlit dot stays at 0 here, unlike the DMD path which gives it dmd_perc0 (20): most
+      // of this frame is the gap between characters, which has no dot to glow. Making the
+      // unlit segments themselves "glow" would need a third shade out of usbalphanumeric.h
       for (unsigned int i = 0; i < g_raw_dmdx * g_raw_dmdy; ++i)
-         g_raw_dmdbuffer[i] = (UINT8)((int)AlphaNumericFrameBuffer[i] * 100 / 3);
+         g_raw_dmdbuffer[i] = (UINT8)(((int)AlphaNumericFrameBuffer[i] * 100 + 1) / 3);
       if (memcmp(old_g_raw_dmdbuffer, g_raw_dmdbuffer, g_raw_dmdx * g_raw_dmdy) != 0) {
          memcpy(old_g_raw_dmdbuffer, g_raw_dmdbuffer, g_raw_dmdx * g_raw_dmdy);
          core_dmd_capture_frame(g_raw_dmdx, g_raw_dmdy, AlphaNumericFrameBuffer, 0, NULL);
@@ -1795,6 +1931,11 @@ void core_updateSw(int flipEn) {
      ((options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_FORCE_ON)) || ((core_gameData->gen & (GEN_ALLWPC | GEN_SAM)) && (options.usemodsol & CORE_MODOUT_ENABLE_MODSOL)) ))
   {
     float state[CORE_MODOUT_SOL_MAX];
+    #if defined(VPINMAME) || defined(LIBPINMAME)
+    // These builds only integrate on client request (see VIDEO_UPDATE): integrate here, or a client only listening to OnSolenoid would see no change
+    // (serialized with the client's integrations by the lock in core_update_pwm_outputs)
+    core_update_pwm_solenoids();
+    #endif
     core_getAllPhysicSols(state);
     for (ii = 1; ii <= coreGlobals.nSolenoids; ii++) {
       UINT8 v = saturatedByte(state[ii - 1]);
@@ -1802,7 +1943,9 @@ void core_updateSw(int flipEn) {
         #ifdef LIBPINMAME
         OnSolenoid(ii, v);
         #else
-        if ((v > 128) != (locals.lastPhysicsOutput[CORE_MODOUT_SOL0 + ii - 1] > 128)) {
+        // On above half; 2 state solenoids above 0, as their onValue may be below 1 (Capcom flipper strength)
+        const UINT8 onLevel = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + ii - 1].integrator == &core_update_pwm_output_sol_2_state ? 0 : 128;
+        if ((v > onLevel) != (locals.lastPhysicsOutput[CORE_MODOUT_SOL0 + ii - 1] > onLevel)) {
           OnSolenoid(ii, v);
           /*-- log solenoid number on the display (except flippers) --*/
           if (!pmoptions.dmd_only && ((ii < CORE_FIRSTLFLIPSOL) || (ii >= CORE_FIRSTSIMSOL))) {
@@ -1816,7 +1959,7 @@ void core_updateSw(int flipEn) {
           }
           #ifdef ENABLE_MECHANICAL_SAMPLES
           if (coreGlobals.soundEn)
-            proc_mechsounds(ii, v > 128);
+            proc_mechsounds(ii, v > onLevel);
           #endif
         }
         #endif
@@ -1828,8 +1971,15 @@ void core_updateSw(int flipEn) {
     UINT64 allSol = core_getAllSol();
     UINT64 chgSol = (allSol ^ locals.lastSol) & vp_getSolMask64();
     locals.lastSol = allSol;
+    const UINT32 allSolHigh = core_getAllSolHigh(); // not masked: SolMask only covers 1..64
+    const UINT32 chgSolHigh = allSolHigh ^ locals.lastSolHigh;
+    locals.lastSolHigh = allSolHigh;
     for (ii = 1; ii < CORE_FIRSTCUSTSOL + core_gameData->hw.custSol; ii++)
     {
+      if (ii == 65) { // past the 64 bits
+        allSol = allSolHigh;
+        chgSol = chgSolHigh;
+      }
       if (chgSol & 0x01) {
         OnSolenoid(ii, allSol & 0x01);
         /*-- log solenoid number on the display (except flippers) --*/
@@ -2015,7 +2165,7 @@ static VIDEO_UPDATE(core_status) {
 
   {
     BMTYPE **line = &lines[locals.firstSimRow + startRow];
-    if (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON))
+    if (coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)))
     {
       float state[CORE_MODOUT_SOL_MAX];
       core_getAllPhysicSols(state);
@@ -2133,9 +2283,13 @@ int core_getSwCol(int colEn) {
 /*----------------------
 /  Set/reset a switch
 /-----------------------*/
+void (*core_swChangedHook)(int swMatrixNo) = NULL;
+
 void core_setSw(int swNo, int value) {
+  UINT8 was;
   if (coreData->sw2m) swNo = coreData->sw2m(swNo); else swNo = (swNo/10)*8+(swNo%10-1);
   //fprintf(stderr,"\nPinMAME switch %d",swNo);
+  was = coreGlobals.swMatrix[swNo/8];
   coreGlobals.swMatrix[swNo/8] &= ~(1<<(swNo%8)); /* clear the bit first */
 #ifdef PROC_SUPPORT
    if (coreGlobals.p_rocEn) {
@@ -2147,6 +2301,7 @@ void core_setSw(int swNo, int value) {
 #ifdef PROC_SUPPORT
    }
 #endif
+  if (core_swChangedHook && ((was ^ coreGlobals.swMatrix[swNo/8]) & (1<<(swNo%8)))) core_swChangedHook(swNo);
 }
 
 /*-------------------------
@@ -2165,23 +2320,206 @@ void core_updInvSw(int swNo, int inv) {
   }
 }
 
+/*--------------------------------------------------------------------
+/  Switch log, kept along with the .inp file of -record/-playback
+/
+/  The host (VPinMAME Controller.Switch, libpinmame PinmameSetSwitch)
+/  writes the switch matrix directly, so its switches never reach the
+/  input ports the .inp file holds. While recording, host changes are
+/  queued and applied by a 1 kHz emulated timer, which logs them with
+/  its tick count to <name>.sw. On playback the same timer applies the
+/  logged changes at the same ticks and live host changes are dropped.
+/  Both runs start from the NVRAM saved as <name>.nv (see mame.c) and
+/  with the real-time clock fixed at the time the recording started.
+/  A reset ends the recording or the playback.
+/---------------------------------------------------------------------*/
+#define SWLOG_HZ       1000
+#define SWLOG_QUEUE    4096 /* power of 2 */
+#define SWLOG_RECORD   1
+#define SWLOG_PLAYBACK 2
+
+static struct {
+  volatile int mode;
+  int rtcSet;                      /* the clock was fixed here, release it at the end */
+  mame_file *file;
+  UINT32 tick;
+  volatile int head;               /* next queue slot, taken by the host threads */
+  int tail;                        /* next queue slot to apply */
+  volatile int queue[SWLOG_QUEUE]; /* 0 = free, else swNo*4 + value*2 + 1 */
+  int held;                        /* change put off to the next tick */
+  UINT32 nextTick;                 /* playback: next logged change, 0 = none */
+  int nextSw, nextVal;
+} swlog;
+
+void core_setHostSw(int swNo, int value) {
+  if (swlog.mode == SWLOG_RECORD) {
+    const int slot = (atomic_increment(&swlog.head) - 1) & (SWLOG_QUEUE-1);
+    atomic_exchange_int(&swlog.queue[slot], swNo*4 + (value ? 2 : 0) + 1);
+  }
+  else if (swlog.mode == 0)
+    core_setSw(swNo, value);
+  /* playback: the log drives the switches */
+}
+
+/* <name>.<ext> in the input log directory, a trailing .inp left out */
+mame_file *core_swlog_fopen(const char *name, const char *ext, int write) {
+  char fn[256];
+  int len = (int)strlen(name);
+  if (len > 4 && strcmp(name + len - 4, ".inp") == 0) len -= 4;
+  snprintf(fn, sizeof(fn), "%.*s.%s", len, name, ext);
+  return mame_fopen(fn, 0, FILETYPE_INPUTLOG, write);
+}
+
+static int swlog_readEvent(const char *line) {
+  unsigned int tick;
+  int sw, value;
+  if (sscanf(line, "%u %d %d", &tick, &sw, &value) != 3)
+    return 0;
+  swlog.nextTick = tick; swlog.nextSw = sw; swlog.nextVal = value;
+  return 1;
+}
+
+static void swlog_readNext(void) {
+  char line[128];
+  swlog.nextTick = 0;
+  while (mame_fgets(line, sizeof(line), swlog.file))
+    if (swlog_readEvent(line))
+      break;
+}
+
+static void swlog_tick(int param) {
+  int done[16], nDone = 0;
+
+  swlog.tick++;
+  if (swlog.mode == SWLOG_PLAYBACK) {
+    while (swlog.nextTick == swlog.tick) {
+      core_setSw(swlog.nextSw, swlog.nextVal);
+      swlog_readNext();
+    }
+    return;
+  }
+  for (;;) {
+    int ev, sw, value, ii;
+    if (swlog.held) { ev = swlog.held; swlog.held = 0; }
+    else if ((ev = atomic_exchange_int(&swlog.queue[swlog.tail & (SWLOG_QUEUE-1)], 0)) != 0) swlog.tail++;
+    else break;
+    sw = ev >> 2; value = (ev >> 1) & 1;
+    if (!core_getSw(sw) == !value)
+      continue;
+    /* one change per switch and tick, so that short pulses still get through */
+    for (ii = 0; ii < nDone && done[ii] != sw; ii++) ;
+    if (ii < nDone || nDone == 16) { swlog.held = ev; break; }
+    done[nDone++] = sw;
+    core_setSw(sw, value);
+    mame_fprintf(swlog.file, "%u %d %d\n", swlog.tick, sw, value);
+  }
+}
+
+static void swlog_start(void) {
+  const char *name = options.playback_name ? options.playback_name : options.record_name;
+  char line[128], rtc[32] = "";
+  struct tm t;
+
+  memset(&swlog, 0, sizeof(swlog));
+  if (!name || !*name)
+    return;
+  swlog.file = core_swlog_fopen(name, "sw", options.playback_name == NULL);
+  if (!swlog.file) {
+    logerror("switch log: cannot open %s.sw\n", name);
+    return;
+  }
+  if (options.playback_name) {
+    char game[32] = "";
+    while (mame_fgets(line, sizeof(line), swlog.file) && !swlog_readEvent(line)) {
+      if (strncmp(line, "game ", 5) == 0) sscanf(line + 5, "%31s", game);
+      else if (strncmp(line, "rtc ", 4) == 0) sscanf(line + 4, "%31[^\r\n]", rtc);
+    }
+    if (strcmp(game, Machine->gamedrv->name)) {
+      logerror("switch log: %s.sw was recorded with %s, not %s\n", name, game, Machine->gamedrv->name);
+      mame_fclose(swlog.file); swlog.file = NULL;
+      return;
+    }
+    if (rtc[0] && !rtc_is_fixed())
+      swlog.rtcSet = (rtc_set_start(rtc) == 0);
+    swlog.mode = SWLOG_PLAYBACK;
+  }
+  else {
+    rtc_now_tm(&t);
+    strftime(rtc, sizeof(rtc), "%Y-%m-%d %H:%M:%S", &t);
+    if (!rtc_is_fixed())
+      swlog.rtcSet = (rtc_set_start(rtc) == 0);
+    mame_fprintf(swlog.file, "# PinMAME switch log: <tick (%d Hz)> <switch> <0/1>\ngame %s\nrtc %s\n",
+                 SWLOG_HZ, Machine->gamedrv->name, rtc);
+    swlog.mode = SWLOG_RECORD;
+  }
+  timer_pulse(TIME_IN_HZ(SWLOG_HZ), 0, swlog_tick);
+}
+
+static void swlog_stop(void) {
+  if (!swlog.file)
+    return;
+  swlog.mode = 0;
+  mame_fclose(swlog.file);
+  swlog.file = NULL;
+  if (swlog.rtcSet)
+    rtc_release();
+  /* after a reset the game runs live */
+  options.record_name = options.playback_name = NULL;
+}
+
+/* For the front-ends without a command line (VPinMAME, libpinmame): open the .inp file
+   their record/playback setting names, the switch log goes along with it */
+int core_inputlog_open(int game, const char *record, const char *playback) {
+  INP_HEADER inp_header;
+
+  if (playback && *playback) {
+    if (!(options.playback = mame_fopen(playback, 0, FILETYPE_INPUTLOG, 0)))
+      return -1;
+    /* skip the header */
+    mame_fread(options.playback, &inp_header, sizeof(INP_HEADER));
+    if (!isalnum((UINT8)inp_header.name[0]))
+      mame_fseek(options.playback, 0, SEEK_SET);
+    options.playback_name = playback;
+  }
+  else if (record && *record) {
+    if (!(options.record = mame_fopen(record, 0, FILETYPE_INPUTLOG, 1)))
+      return -1;
+    memset(&inp_header, 0, sizeof(INP_HEADER));
+    strncpy(inp_header.name, drivers[game]->name, sizeof(inp_header.name)-1);
+    mame_fwrite(options.record, &inp_header, sizeof(INP_HEADER));
+    options.record_name = record;
+  }
+  return 0;
+}
+
+void core_inputlog_close(void) {
+  if (options.playback) { mame_fclose(options.playback); options.playback = NULL; }
+  if (options.record)   { mame_fclose(options.record);   options.record = NULL; }
+  options.record_name = options.playback_name = NULL;
+}
+
 /*-------------------------------------
 /  Read the status of a solenoid
 /  For the standard solenoids this is
 /  the "smoothed" value
 /--------------------------------------*/
 int core_getSol(int solNo) {
-  if (solNo <= 28)
-    return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value) : coreGlobals.solenoids & CORE_SOLBIT(solNo);
-  else if (solNo <= 32) { // 29-32
-    if (core_gameData->gen & GEN_ALLS11)
-      return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value) : coreGlobals.solenoids & CORE_SOLBIT(solNo);
-    else if (core_gameData->gen & GEN_ALLWPC) // Remap WPC GameOn/J111 GPIO (hacky)
-      return coreGlobals.solenoids2 & (1<<(solNo-29+8));
-  }
+  // No solenoid 0, but VPM's Solenoids/SolenoidsState arrays start at index 0
+  if (solNo < 1)
+    return 0;
+  // Binary states are returned as 0/1, like the changed solenoid list. The integrated value is only returned with physical solenoid outputs
+  // or modulated solenoids: with CORE_MODOUT_FORCE_ON alone (SAM, Capcom, pinHeck), a blinking flasher would read on for the whole sequence
+  // 1-32: driver board outputs, like core_getAllSol / core_getAllPhysicSols
+  if (solNo <= 28 || (solNo <= 32 && !(core_gameData->gen & GEN_ALLWPC)))
+    return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value) : ((coreGlobals.solenoids & CORE_SOLBIT(solNo)) != 0);
+  else if (solNo <= 32) // 29-32 WPC: remap GameOn/J111 GPIO (hacky)
+    // Binary state even with physical outputs, while core_getAllPhysicSols reports slots 28-30 (CORE_MODOUT_PULSE, same states) as 0/255
+    return (coreGlobals.solenoids2 & (1<<(solNo-29+8))) != 0;
   else if (solNo <= 36) { // 33-36 driver specific sols
-    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)))
+    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)))
       return saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value); // Fliptronics are implemented through PWM (needed as these are used to drive flashers on some games)
+    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & CORE_MODOUT_FORCE_ON)) // Binary state of the flipper outputs, like core_getFlipSolBits
+      return coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value > 0.f;
     if (core_gameData->gen & GEN_ALLWPC) { // WPC only: Upper flipper (note that other systems also have upper flippers, they just don't implement the legacy PinMAME flipper output mapping)
       int mask;
       /*-- flipper coils --*/
@@ -2191,36 +2529,42 @@ int core_getSol(int solNo) {
         mask = CORE_ULFLIPSOLBITS;
       else
         mask = 1<<(solNo - 33 + 4);
-      return coreGlobals.solenoids2 & mask;
+      return (coreGlobals.solenoids2 & mask) != 0;
     }
-    else if (core_gameData->gen & GEN_SAM) // SAM only: fake GameOn solenoid for fast flips
-       return coreGlobals.solenoids2 & 0x10;
+    else if (core_gameData->gen & (GEN_SAM | GEN_SPIKE1)) // SAM, SPIKE 1: fake GameOn solenoid for fast flips
+       return (coreGlobals.solenoids2 & 0x10) != 0;
+    else if (core_gameData->gen & GEN_ALLWS) // Whitestar: aux board outputs (magnets, ...), like core_getAllSol
+       return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value) : ((coreGlobals.solenoids2 & (1<<(solNo - 33 + 4))) != 0);
   }
   else if (solNo <= 44) { // 37-44 WPC95 & S11 extra
     if (core_gameData->gen & (GEN_WPC95|GEN_WPC95DCS)) { // Duplicated in 37..40 / 41..44, so always read from 41..44 (hence the |4 in the index/mask) for solenoids, and 37..40 for PWM outputs
-      if (coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)))
+      if (coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)))
         return saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + (solNo <= 40 ? solNo : (solNo - 4))-1].value);
       else
-        return coreGlobals.solenoids & (1<<((solNo - 13)|4));
+        return (coreGlobals.solenoids & (1<<((solNo - 13)|4))) != 0;
     }
-    if (core_gameData->gen & GEN_ALLS11)
-      return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + 32 + solNo - 37 + 8].value) : coreGlobals.solenoids2 & (1<<(solNo - 37 + 8));
+    if (core_gameData->gen & (GEN_ALLS11 | GEN_PINHECK)) // S11 outputs in slots 40-47; pinHeck's GI 8-15 in 36-43, its lower flippers using 44-47
+      return coreGlobals.nSolenoids && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) ? saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + ((core_gameData->gen & GEN_PINHECK) ? solNo - 1 : 32 + solNo - 37 + 8)].value) : ((coreGlobals.solenoids2 & (1<<(solNo - 37 + 8))) != 0);
   }
   else if (solNo <= 48) { // 45-48 Lower flippers
-    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)))
+    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)))
       return saturatedByte(coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value); // Fliptronics are implemented through PWM
+    if (coreGlobals.hasModulatedFlippers && (options.usemodsol & CORE_MODOUT_FORCE_ON)) // Binary state of the flipper outputs, like core_getFlipSolBits
+      return coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + solNo - 1].value > 0.f;
     int mask = 1<<(solNo - 45);
     /*-- Game must have lower flippers but for symmetry we check anyway --*/
     if      /*(*/(solNo == sLRFlip) //&& (core_gameData->hw.flippers & FLIP_SOL(FLIP_LR)))
       mask = CORE_LRFLIPSOLBITS;
     else if /*(*/(solNo == sLLFlip) //&& (core_gameData->hw.flippers & FLIP_SOL(FLIP_LL)))
       mask = CORE_LLFLIPSOLBITS;
-    return coreGlobals.solenoids2 & mask;
+    return (coreGlobals.solenoids2 & mask) != 0;
   }
   else if (solNo <= 50) // 49-50 simulated
     return sim_getSol(solNo);
-  else if (core_gameData->hw.getSol)
-    return core_gameData->hw.getSol(solNo);
+  else if (core_gameData->hw.getSol) { // 51+ custom: drivers return a level (Stern SPIKE 1: 0..255) or a mask bit (S7): 0/1 unless modulated
+    const int state = core_gameData->hw.getSol(solNo);
+    return (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) ? state : (state != 0);
+  }
   return 0;
 }
 
@@ -2239,7 +2583,22 @@ int core_getPulsedSol(int solNo) {
 /*-------------------------------------------------
 /  Get the value of all solenoids in one variable
 /--------------------------------------------------*/
+/*-- Flipper solenoid bits in solenoids2's layout (LR, LL, UR, UL power/hold). Drivers forcing the PWM integration of
+     their flipper outputs (pinHeck, Capcom) take them from those outputs instead of the bits set once a frame, so a
+     coil and its flipper output switch together --*/
+static UINT8 core_getFlipSolBits(void) {
+  static const UINT8 slot[8] = { 44, 45, 46, 47, 32, 33, 34, 35 }; // solenoids 45-48, 33-36
+  UINT8 bits = 0;
+  if (!coreGlobals.hasModulatedFlippers || !(options.usemodsol & CORE_MODOUT_FORCE_ON))
+    return (UINT8)coreGlobals.solenoids2;
+  for (int i = 0; i < 8; i++)
+    if (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + slot[i]].value > 0.f)
+      bits |= (UINT8)(1u << i);
+  return bits;
+}
+
 UINT64 core_getAllSol(void) {
+  const UINT8 flipBits = core_getFlipSolBits();
   UINT64 sol = coreGlobals.solenoids;
   if (core_gameData->gen & GEN_ALLWPC) // 29-32 GameOn
     sol = (sol & 0x0fffffffull) | ((coreGlobals.solenoids2 & 0x0f00ull)<<20);
@@ -2248,21 +2607,26 @@ UINT64 core_getAllSol(void) {
     sol |= (tmp<<12)|(tmp<<8);
   }
   if (core_gameData->gen & GEN_ALLWPC) { // 33-36 WPC upper flipper solenoids (hold coil is set if either coil is set)
-    UINT8 uFlip = (coreGlobals.solenoids2 & (CORE_URFLIPSOLBITS|CORE_ULFLIPSOLBITS));
+    UINT8 uFlip = (flipBits & (CORE_URFLIPSOLBITS|CORE_ULFLIPSOLBITS));
     if (core_gameData->hw.flippers & FLIP_SOL(FLIP_UR))
       uFlip |= (uFlip & 0x10)<<1;
     if (core_gameData->hw.flippers & FLIP_SOL(FLIP_UL))
       uFlip |= (uFlip & 0x40)<<1;
     sol |= (((UINT64)uFlip)<<28);
   }
-  else if (core_gameData->gen & GEN_SAM) // 33 SAM fake GameOn sol for fast flips
+  else if (core_gameData->gen & (GEN_SAM | GEN_SPIKE1)) // 33 SAM, SPIKE 1 fake GameOn sol for fast flips
      sol |= (((UINT64)(coreGlobals.solenoids2 & 0x10)) << 28);
   else if (core_gameData->gen & GEN_ALLWS) // 33..36 various aux board outputs
      sol |= ((UINT64)(coreGlobals.solenoids2 & 0x00f0)) << 28;
-  if (core_gameData->gen & (GEN_ALLS11 | GEN_SAM | GEN_SPA)) // 37-44 S11, SAM extra
+  else if ((core_gameData->gen & (GEN_PINHECK | GEN_CAPCOM)) && coreGlobals.hasModulatedFlippers) { // 33-36 mirrored upper flippers (hold set if either coil is); not P2K: bits 4-7 are its drivers 37-40
+    UINT8 uFlip = (flipBits & (CORE_URFLIPSOLBITS|CORE_ULFLIPSOLBITS));
+    uFlip |= (uFlip & 0x50)<<1;
+    sol |= (((UINT64)uFlip)<<28);
+  }
+  if (core_gameData->gen & (GEN_ALLS11 | GEN_SAM | GEN_SPA | GEN_PINHECK)) // 37-44 S11, SAM extra, pinHeck GI 8-15
      sol |= ((UINT64)(coreGlobals.solenoids2 & 0xff00)) << 28;
   { // 45-48 flipper solenoids (hold coil is set if either coil is set)
-    UINT8 lFlip = (coreGlobals.solenoids2 & (CORE_LRFLIPSOLBITS|CORE_LLFLIPSOLBITS));
+    UINT8 lFlip = (flipBits & (CORE_LRFLIPSOLBITS|CORE_LLFLIPSOLBITS));
     lFlip |= (lFlip & 0x05)<<1;
     sol |= (((UINT64)lFlip)<<44);
   }
@@ -2272,10 +2636,21 @@ UINT64 core_getAllSol(void) {
   if ( core_gameData->hw.getSol ) {
     UINT64 bit = ((UINT64)1)<<(CORE_FIRSTCUSTSOL-1);
     int ii;
-    for (ii = 0; ii < core_gameData->hw.custSol; ii++) {
+    for (ii = 0; ii < core_gameData->hw.custSol && CORE_FIRSTCUSTSOL + ii <= 64; ii++) { // 65 and up: core_getAllSolHigh
       sol |= core_gameData->hw.getSol(CORE_FIRSTCUSTSOL + ii) ? bit : 0;
       bit <<= 1;
     }
+  }
+  return sol;
+}
+
+/* Custom solenoids 65 and up (bit 0 = 65), which don't fit core_getAllSol's 64 bits (Stern SPIKE 1: up to 72) */
+UINT32 core_getAllSolHigh(void) {
+  UINT32 sol = 0;
+  if (core_gameData->hw.getSol) {
+    int ii;
+    for (ii = 65; ii < CORE_FIRSTCUSTSOL + core_gameData->hw.custSol && ii <= CORE_MODOUT_SOL_MAX; ii++)
+      sol |= core_gameData->hw.getSol(ii) ? (1u << (ii - 65)) : 0;
   }
   return sol;
 }
@@ -2290,7 +2665,7 @@ void core_getAllPhysicSols(float* const state)
   // 1..32 solenoids (for WPC also GameOn and J111 GPIO)
   for (int i = 0; i < 32; i++)
     state[i] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
-  /*-- 33..36 [WPC & Capcom only] upper flipper solenoids --*/
+  /*-- 33..36 upper flipper solenoids (integrated for WPC Fliptronics, pinHeck, Capcom) --*/
   if (coreGlobals.hasModulatedFlippers && (options.usemodsol & (CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_FORCE_ON)))
     for (int i = 32; i < 36; i++)
       state[i] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
@@ -2305,8 +2680,8 @@ void core_getAllPhysicSols(float* const state)
     state[34] = uFlip & 0x40 ? 1.0f : 0.0f;
     state[35] = uFlip & 0x80 ? 1.0f : 0.0f;
   }
-  /*-- 33 [SAM only] fake GameOn solenoid for fast flips --*/
-  if (core_gameData->gen & GEN_SAM)
+  /*-- 33 [SAM, SPIKE 1] fake GameOn solenoid for fast flips --*/
+  if (core_gameData->gen & (GEN_SAM | GEN_SPIKE1))
     state[32] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + 33 - 1].value;
   /*-- 33..36 Whitestar various aux board outputs --*/
   else if (core_gameData->gen & GEN_ALLWS)
@@ -2318,6 +2693,9 @@ void core_getAllPhysicSols(float* const state)
       state[i    ] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
       state[i + 4] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
     }
+  else if (core_gameData->gen & GEN_PINHECK) // 37-44 pinHeck GI 8-15
+    for (int i = 36; i < 44; i++)
+      state[i] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
   else if (core_gameData->gen & (GEN_ALLS11 | GEN_SAM | GEN_SPA)) // 37-44 S11, SAM extra
     for (int i = 40; i < 48; i++)
       state[i - 4] = coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value;
@@ -2424,6 +2802,16 @@ static void drawChar(struct mame_bitmap *bitmap, int row, int col, UINT16 seg_bi
 }
 
 
+// Integration of the physical outputs runs on the emulation thread only, see core_publish_pwm_outputs
+#if defined(_MSC_VER)
+static __declspec(thread) int core_on_emulation_thread = 0;
+#elif defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) && (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 3))
+static int core_on_emulation_thread = 0; // no TLS on MinGW before GCC 4.3: only standalone PinMAME is built there, without client threads
+#else
+static __thread int core_on_emulation_thread = 0; // a keyword, not a macro: #if defined(__thread) is always false
+#endif
+static void core_publish_pwm_outputs(int force);
+
 /*----------------------
 /  Initialize PinMAME
 /-----------------------*/
@@ -2436,7 +2824,16 @@ static MACHINE_INIT(core) {
     /*-- init variables --*/
     memset(&coreGlobals, 0, sizeof(coreGlobals));
     memset(&locals, 0, sizeof(locals));
+    /*-- this is the emulation thread, the one that integrates and publishes the physical outputs --*/
+    core_on_emulation_thread = 1;
+    cpu_publish_outputs = core_publish_pwm_outputs;
     coreData = (struct pinMachine *)&Machine->drv->pinmame;
+    /*-- CORE_MODOUT_FORCE_ON is per driver: the game run before may have set it (SAM, Capcom, pinHeck) --*/
+    options.usemodsol &= ~CORE_MODOUT_FORCE_ON;
+#if defined(VPINMAME) || defined(PINMAME) || defined(LIBPINMAME)
+    /*-- new run, new -dmd_dump_dir dump; a soft reset keeps appending --*/
+    dmd_dump_txtFresh = dmd_dump_rawFresh = 1;
+#endif
     //-- initialise timers --
     if (coreData->timers[0].callback) {
       int ii;
@@ -2451,9 +2848,34 @@ static MACHINE_INIT(core) {
         }
       }
     }
+    swlog_start();
     /*-- init switch matrix --*/
     memcpy((void*)coreGlobals.invSw, (void*)core_gameData->wpc.invSw, sizeof(core_gameData->wpc.invSw));
     memcpy((void*)coreGlobals.swMatrix, (void*)coreGlobals.invSw, sizeof(coreGlobals.invSw));
+    /*-- validate switch & lamp matrices --*/
+    if (coreData->m2sw) {
+      assert(coreData->sw2m);
+      for (int col = 0; col < CORE_STDSWCOLS + core_gameData->hw.swCol; col++) {
+        for (int row = 0; row < 8; row++) {
+          const int n = col * 8 + row;
+          const int m2sw = coreData->m2sw(col, row);
+          const int sw2m = coreData->sw2m(m2sw);
+          assert(sw2m == n);
+        }
+      }
+    }
+    if (coreData->m2lamp) {
+       assert(coreData->lamp2m);
+       for (int col = 0; col < core_gameData->hw.lampCol; col++) {
+          for (int row = 0; row < 8; row++) {
+             const int n = col * 8 + row;
+             const int m2lamp = coreData->m2lamp(col, row);
+             const int lamp2m = coreData->lamp2m(m2lamp);
+             assert(lamp2m == n);
+          }
+       }
+    }
+
 #ifdef PROC_SUPPORT
     /*-- P-ROC operation requires a YAML.  Disable P-ROC operation
      * if no YAML is specified. --*/
@@ -2520,7 +2942,7 @@ static MACHINE_INIT(core) {
               parent_layout = layout + 1;
               layout->index = -1;
               layout = layout->importedLayout - 1;
-              break;
+              continue; // trailing index reset would access importedLayout[-1]
 
            case CORE_VIDEO:
               assert(layout->importedLayout == NULL); // Not an import
@@ -2540,6 +2962,10 @@ static MACHINE_INIT(core) {
            default:
               assert(layout->importedLayout == NULL); // Not an import
               #if defined(VPINMAME) || defined(LIBPINMAME)
+                 if (locals.n_seg_layouts == 0)
+                    locals.alpha_seg16s = (layout->type & CORE_SEGALL) == CORE_SEG16S;
+                 else if (locals.alpha_seg16s != ((layout->type & CORE_SEGALL) == CORE_SEG16S))
+                    locals.alpha_seg16s = 0; // mixed types: not converted (layoutAlphanumericFrame maps no such machine)
                  locals.disp_num_segs[locals.n_seg_layouts++] = (UINT8)layout->length;
               #endif
               break;
@@ -2634,6 +3060,7 @@ static MACHINE_STOP(core) {
   g_raw_dmd_frame_count = 0;
 #endif
 
+  swlog_stop();
   mech_emuExit();
   if (coreData->stop) coreData->stop();
   snd_cmd_exit();
@@ -2651,14 +3078,21 @@ static MACHINE_STOP(core) {
   for (int i = 0; i < 16; i++) {
     if (locals.dmdStates[i]) {
       free(locals.dmdStates[i]->rawFrames);
+      free(locals.dmdStates[i]->tempRawFrame);
+      free(locals.dmdStates[i]->tempFIRBuffer);
       free(locals.dmdStates[i]->dmdFIRBuffer);
       free(locals.dmdStates[i]->bitplaneFrame);
       free(locals.dmdStates[i]->luminanceFrame);
+      for (int j = 0; j < 3; j++) {
+        free(locals.dmdStates[i]->pubLum[j]);
+        free(locals.dmdStates[i]->pubRaw[j]);
+      }
       free(locals.dmdStates[i]);
       locals.dmdStates[i] = NULL;
     }
   }
 
+  cpu_publish_outputs = NULL;
   coreData = NULL; //!! FIXME this can still be in use when reading lamps via VPM / VPX-script
 }
 
@@ -2667,16 +3101,41 @@ static void core_findSize(const core_tLCDLayout *layout, int *maxX, int *maxY) {
     for (; layout->length; layout += 1) {
       int tmpX, tmpY, type = layout->type & CORE_SEGMASK;
 #if defined(VPINMAME) && !defined(MAME_DEBUG)
+      /* This is the only CORE_NODISP test in the file, and the asymmetry it creates is
+         deliberate: updateDisplay() renders these layouts into the bitmap while this
+         leaves them out of the window, which is precisely "not included in the VPinMAME
+         window" - they land outside the visible area, so VPM does not show them and
+         drives them over its own channel instead.
+         The invariant that keeps that safe is therefore NOT maxX/maxY but the BITMAP: a
+         NODISP layout may sit outside the visible area, but it must stay within
+         screen_width/screen_height, or drawChar and the DMD blitter run off the row.
+         Every one of them does today, with room to spare - all are narrower in X than
+         their group's main display, and longer only in Y, where the clamp below takes
+         maxY to the full screen height anyway unless dmd_only is set.  Nothing checks
+         that invariant, and this is the one place that could.
+         Do not make the two symmetric.  Measuring them here defeats the flag (se_apollo
+         and nbaf go 64 -> 94 tall, monopoly 64 -> 82), and skipping them in
+         updateDisplay() would have to keep segPos advancing or coreGlobals.drawSeg
+         shifts for every later layout - segames.c carries a real CORE_SEG7|CORE_NODISP
+         entry, so that is not hypothetical */
       if (layout->type & CORE_NODISP) continue;
 #endif
       if (type == CORE_IMPORT)
         { core_findSize(layout->importedLayout, maxX, maxY); continue; }
       if (type == CORE_DMD || type == CORE_VIDEO) {
-        tmpX = (layout->left + layout->length) * locals.segData[type].cols + 1;
-        tmpY = (layout->top  + layout->start)  * locals.segData[type].rows + 1;
+        /* No trailing +1: core_dmd_render_internal() draws its last dot at
+           (left+length-1)*cols and the AA pass ends on that same pixel, so this fits
+           exactly for cols == 1 and leaves one spare column for a 2 pixel dot pitch (it is also what Controller.DmdWidth reports) */
+        tmpX = (layout->left + layout->length) * locals.segData[type].cols;
+        tmpY = (layout->top  + layout->start)  * locals.segData[type].rows;
       }
       else {
-        tmpX = (layout->left + 2*layout->length) * (locals.segData[type & 0x07].cols + 1) / 2 + CORE_SCREENX_INC;
+        /* segData[type], not [type & 0x07]: the renderer indexes the full type (see the
+           start and the advance in core_seg_video_update), and the table has 18 rows, so
+           masking to 3 bits read the wrong row for every type above 7.  It only ever
+           over-measured - 11/12 (SEG7S/SEG7SC, cols 11) were measured as 3/4 (cols 15) -
+           so it was harmless, but it meant the size and the drawing disagreed */
+        tmpX = (layout->left + 2*layout->length) * (locals.segData[type].cols + 1) / 2;
         tmpY = (layout->top + 2) * (locals.segData[0].rows + 1) / 2;
       }
       if (tmpX > *maxX) *maxX = tmpX;
@@ -2708,6 +3167,11 @@ static UINT32 core_initDisplaySize(const core_tLCDLayout *layout) {
 }
 
 void core_nvram(void *file, int write, void *mem, size_t length, UINT8 init) {
+#ifdef REMOTE_DEBUG
+  /* all drivers pass their battery backed memory through here: tell the
+     remote debugger where it is, so it can show and dump it */
+  remote_debug_nvram_register(mem, length);
+#endif
   if (write)     mame_fwrite(file, mem, length); /* save */
   else if (file) mame_fread(file,  mem, length); /* load */
   else           memset(mem, init, length);      /* first time */
@@ -2791,11 +3255,11 @@ void core_update_pwm_output_sol_2_state(const double now, const int index, const
      output->state.sol.lastFlipTimestamp = now;
   if (isFlip && state == 0) {
      // If binary output is flipping to ON state, immediately retain and report the ON state
-     output->value = 1.0f;
+     output->value = output->state.sol.onValue;
   }
   else if ((float)(now - output->state.sol.lastFlipTimestamp) > output->state.sol.switchDownLatency) {
      // Output is in a stable state (not PWMed since at least the defined switch down latency), just report its value
-     output->value = state ? 1.f : 0.f;
+     output->value = state ? output->state.sol.onValue : 0.f;
   }
   #ifdef LOG_PWM_OUT
   if (index == LOG_PWM_OUT)
@@ -2806,7 +3270,7 @@ void core_update_pwm_output_sol_2_state(const double now, const int index, const
   if (output->state.sol.fastOn && (prevValue != output->value)) {
     // We simply push solenoid to the corresponding solenoids/solenoids2 (the driver is responsible to map things correctly from the start, without relying on an additional remap by core.c)
     const int sol = (index - CORE_MODOUT_SOL0) & 0x1F;
-    const UINT32 statel = output->value > 0.5f ? 1 : 0;
+    const UINT32 statel = output->value > 0.f ? 1 : 0; // on is any value above 0: onValue may be below 1
     if (index < CORE_MODOUT_SOL0 + 32)
       coreGlobals.solenoids = (coreGlobals.solenoids & ~(1u << sol)) | (statel << sol);
     else if (index < CORE_MODOUT_SOL0 + 64)
@@ -2884,10 +3348,7 @@ void core_update_pwm_output_bulb(const double now, const int index, const int is
 {
   core_tPhysicOutput* const output = &coreGlobals.physicOutputState[index];
   const float U = (state ^ output->state.bulb.isReversed) ? output->state.bulb.U : 0.f;
-  // Clamp elapsed time to >= 0. On the consumer-driven ("on request") path, the
-  // stable step's now == global_offset (timer_starttime of a zeroed timer) can lag
-  // the emu-thread flip timestamps (timer_get_time), planting integrationTimestamp
-  // behind prevIntegrationTimestamp -> negative dt. No-op in normal operation.
+  // Clamp elapsed time to >= 0: a safety net, the flips and the integration taking the same clock (the emulation thread's timer_get_time)
   const float dt_diff = fmaxf(0.f, (float)(output->state.bulb.integrationTimestamp - output->state.bulb.prevIntegrationTimestamp));
 
   float countf;
@@ -2998,6 +3459,7 @@ void core_set_pwm_output_type(int startIndex, int count, int type)
 {
   for (int i = startIndex; i < startIndex + count; i++) {
     memset(&(coreGlobals.physicOutputState[i]), 0, sizeof(core_tPhysicOutput));
+    locals.pwm_driver_value[i >> 3] &= (UINT8)~(1u << (i & 7)); // integrated from now on, see core_set_pwm_output_driver_value
     coreGlobals.physicOutputState[i].flipBufferPos = (coreGlobals.binaryOutputState[i >> 3] >> (i & 7)) & 1;
     coreGlobals.physicOutputState[i].type = type;
     switch (type) {
@@ -3014,12 +3476,14 @@ void core_set_pwm_output_type(int startIndex, int count, int type)
       coreGlobals.physicOutputState[i].state.sol.fastOn = TRUE;
       // TODO 60ms is likely too much. For example for Stern SAM, the sequence is 40ms pulse to lift flipper then 1ms pulse every 12ms to hold.
       coreGlobals.physicOutputState[i].state.sol.switchDownLatency = 0.060f;
+      coreGlobals.physicOutputState[i].state.sol.onValue = 1.f;
       coreGlobals.physicOutputState[i].integrator = &core_update_pwm_output_sol_2_state;
       break;
     case CORE_MODOUT_LEGACY_SOL_2_STATE:
       coreGlobals.physicOutputState[i].state.sol.fastOn = FALSE;
       // TODO 60ms is likely too much. For example for Stern SAM, the sequence is 40ms pulse to lift flipper then 1ms pulse every 12ms to hold.
       coreGlobals.physicOutputState[i].state.sol.switchDownLatency = 0.060f;
+      coreGlobals.physicOutputState[i].state.sol.onValue = 1.f;
       coreGlobals.physicOutputState[i].integrator = &core_update_pwm_output_sol_2_state;
       break;
     case CORE_MODOUT_BULB_44_5_7V_AC: // Sega/Stern Whitestar uses 5.7V AC wired to #44 bulbs for GI which leads to a (very slow) bulb equilibrium around 78% of the rated bulb brightness. Likely for less heat and longer bulb life ?
@@ -3103,17 +3567,17 @@ void core_set_pwm_output_type(int startIndex, int count, int type)
       coreGlobals.physicOutputState[i].state.bulb.relative_brightness = 1.f;
       coreGlobals.physicOutputState[i].integrator = &core_update_pwm_output_bulb;
       break;
-    case CORE_MODOUT_BULB_44_20V_AC_POS_BY: // Strobed bulb, 20.5V AC switched through a SCR and a diode limiting to positive half of the AC sine (Bally 6803)
+    case CORE_MODOUT_BULB_44_10V_AC_POS_BY: // Strobed bulb, 10.25V AC switched through a SCR and a diode limiting to positive half of the AC sine (Bally 6803)
       coreGlobals.physicOutputState[i].state.bulb.bulb = BULB_44;
-      coreGlobals.physicOutputState[i].state.bulb.U = 20.5f - 0.7f - 0.7f;
+      coreGlobals.physicOutputState[i].state.bulb.U = 10.25f - 0.7f - 0.7f;
       coreGlobals.physicOutputState[i].state.bulb.isAC = 2;
       coreGlobals.physicOutputState[i].state.bulb.serial_R = 0.f;
       coreGlobals.physicOutputState[i].state.bulb.relative_brightness = 1.f;
       coreGlobals.physicOutputState[i].integrator = &core_update_pwm_output_bulb;
       break;
-    case CORE_MODOUT_BULB_44_20V_AC_NEG_BY: // Strobed bulb, 20.5V AC switched through a SCR and a diode limiting to negative half of the AC sine (Bally 6803)
+    case CORE_MODOUT_BULB_44_10V_AC_NEG_BY: // Strobed bulb, 10.25V AC switched through a SCR and a diode limiting to negative half of the AC sine (Bally 6803)
       coreGlobals.physicOutputState[i].state.bulb.bulb = BULB_44;
-      coreGlobals.physicOutputState[i].state.bulb.U = 20.5f - 0.7f - 0.7f;
+      coreGlobals.physicOutputState[i].state.bulb.U = 10.25f - 0.7f - 0.7f;
       coreGlobals.physicOutputState[i].state.bulb.isAC = 3;
       coreGlobals.physicOutputState[i].state.bulb.serial_R = 0.f;
       coreGlobals.physicOutputState[i].state.bulb.relative_brightness = 1.f;
@@ -3218,6 +3682,7 @@ void core_set_pwm_output_bulb(int startIndex, int count, int bulb, float U, int 
 {
   for (int i = startIndex; i < startIndex + count; i++) {
     memset(&(coreGlobals.physicOutputState[i]), 0, sizeof(core_tPhysicOutput));
+    locals.pwm_driver_value[i >> 3] &= (UINT8)~(1u << (i & 7)); // integrated from now on, see core_set_pwm_output_driver_value
     coreGlobals.physicOutputState[i].flipBufferPos = (coreGlobals.binaryOutputState[i >> 3] >> (i & 7)) & 1;
     coreGlobals.physicOutputState[i].type = CORE_MODOUT_CUSTOM_INTEGRATOR;
     coreGlobals.physicOutputState[i].state.bulb.bulb = bulb;
@@ -3232,11 +3697,30 @@ void core_set_pwm_output_bulb(int startIndex, int count, int bulb, float U, int 
 void core_set_pwm_output_led_vfd(int startIndex, int count, int isVFD, float relative_brightness) {
   for (int i = startIndex; i < startIndex + count; i++) {
     memset(&(coreGlobals.physicOutputState[i]), 0, sizeof(core_tPhysicOutput));
+    locals.pwm_driver_value[i >> 3] &= (UINT8)~(1u << (i & 7)); // integrated from now on, see core_set_pwm_output_driver_value
     coreGlobals.physicOutputState[i].flipBufferPos = (coreGlobals.binaryOutputState[i >> 3] >> (i & 7)) & 1;
     coreGlobals.physicOutputState[i].type = CORE_MODOUT_CUSTOM_INTEGRATOR;
     coreGlobals.physicOutputState[i].state.bulb.relative_brightness = relative_brightness;
     coreGlobals.physicOutputState[i].integrator = &core_update_pwm_output_led;
   }
+}
+
+// For outputs whose value the driver writes itself, as the emulation only knows a level, not the on/off signal the integrators work
+// from: node board LEDs (Stern SAM, SPIKE 1), pinHeck's RGB LEDs and servos, the Rockwell VFD's duty cycle (GTS80B)... These record
+// no flips, so a type set by a table (vp_setModOutputType: SolMask(1001+), ModOutputType) would install an integrator that overwrites
+// the value with 0: tables cannot change their type (unlike e.g. Whitestar's outputs, whose flips any model can integrate).
+// TODO such an output could instead feed its level into the model a table selects (e.g. a bulb filament heated by the level's
+//      equivalent voltage or duty cycle, giving it the bulb's inertia). Only worth it where the hardware is not an LED anyway
+void core_set_pwm_output_driver_value(int startIndex, int count)
+{
+   core_set_pwm_output_type(startIndex, count, CORE_MODOUT_NONE);
+   for (int i = startIndex; i < startIndex + count; i++)
+      locals.pwm_driver_value[i >> 3] |= (UINT8)(1u << (i & 7));
+}
+
+int core_is_pwm_output_driver_value(int index)
+{
+   return (locals.pwm_driver_value[index >> 3] >> (index & 7)) & 1;
 }
 
 void core_set_pwm_output_types(int startIndex, int count, int* outputTypes)
@@ -3245,31 +3729,169 @@ void core_set_pwm_output_types(int startIndex, int count, int* outputTypes)
       core_set_pwm_output_type(startIndex + i, 1, outputTypes[i]);
 }
 
-// Perform emulation of the requested physical outputs from the stored PWM digital output states
-// Initial implementation was performing this task upon digital output writes causing DMD animation stutters and sound buffer underflow.
-// This is now performed on physic output reads, moving the CPU load to the caller thread. The client is responsible and has the ability
-// to manage this load according to its use. It also allows to limit the update to the requested outputs (physics should be updated 
-// according to physic engine constants while visual should be updated according to output display characteristics).
+int core_get_pwm_output_type(int index)
+{
+   if (coreGlobals.physicOutputState[index].integrator == &core_update_pwm_output_bulb)
+      return 1;
+   if (coreGlobals.physicOutputState[index].integrator == &core_update_pwm_output_led)
+      return 1;
+   return 0;
+}
+
+// Called when more flips than the buffer safely holds happened since the last integration (fast PWM, or an output read
+// rarely): the oldest may have been overwritten. The newest FLIP_BUFFER_SIZE / 2 flips stay exact; the period before them
+// is replaced by a PWM signal with the same ON time and flip count, in periods of at least 1ms (the bulb integration step)
+static void core_replace_lost_pwm_flips(core_tPhysicOutput* const output, const int index, const unsigned int pos, const double onTime)
+{
+   const unsigned int first = pos - FLIP_BUFFER_SIZE / 2 + 1; // oldest kept flip
+   const unsigned int lost = first - 1 - output->lastIntegrationFlipPos;
+   const double start = output->readTime, end = output->flipTimeStamps[first % FLIP_BUFFER_SIZE], length = end - start;
+   int state = output->lastIntegrationFlipPos & 1;
+   if (length > 0.)
+   {
+      // ON time up to the oldest kept flip: total minus the ON periods between the kept flips
+      double onAtEnd = onTime;
+      for (unsigned int k = first; k != pos; k++)
+         if (k & 1)
+            onAtEnd -= output->flipTimeStamps[(k + 1) % FLIP_BUFFER_SIZE] - output->flipTimeStamps[k % FLIP_BUFFER_SIZE];
+      double duty = (onAtEnd - output->readOnTime) / length;
+      duty = duty < 0. ? 0. : duty > 1. ? 1. : duty;
+      int periods = (int)(lost / 2);
+      if (periods > length * 1000.)
+         periods = (int)(length * 1000.);
+      if (periods < 1)
+         periods = 1;
+      const double period = length / periods;
+      for (int p = 0; p < periods; p++)
+      {
+         const double t = start + p * period;
+         if (duty > 0. && state == 0)
+         {
+            output->integrator(t, index, TRUE, state);
+            state = 1;
+         }
+         if (duty < 1. && state == 1)
+         {
+            output->integrator(t + duty * period, index, TRUE, state);
+            state = 0;
+         }
+      }
+   }
+   // Continue with the state before the oldest kept flip
+   if (state != (int)((first - 1) & 1))
+      output->integrator(end, index, TRUE, state);
+   output->lastIntegrationFlipPos = first - 1;
+}
+
+static void core_integrate_pwm_outputs(const int startIndex, const int count);
+static void core_dmd_publish(const int force);
+static void core_sync_pwm_binary_outputs(const int startIndex, const int count);
+
+// Perform emulation of the requested physical outputs from the stored PWM digital output states.
+// Integrating on every output write caused DMD animation stutters and sound buffer underflows, so it is done in batches instead.
+// Only the emulation thread integrates: it records the flips, so the integrator state, the flip records and the on/off bits FORCE_ON
+// derives have a single writer, and no lock is needed. It does so for its own needs (drivers, core_updateSw) and to publish the outputs
+// for the client threads (VPinMAME, the libpinmame API and plugin, possibly several of them, see core_publish_pwm_outputs). A call from
+// a client thread does not integrate: it marks the range's category wanted, so the publish integrates it from then on, and the client
+// reads what was published (single floats and bytes, each written whole)
+#define CORE_PWM_WANT_LAMPS    0x01
+#define CORE_PWM_WANT_SOLS     0x02
+#define CORE_PWM_WANT_GIS      0x04
+#define CORE_PWM_WANT_SEGMENTS 0x08
+static void core_want_pwm_outputs(const int startIndex, const int count)
+{
+   const int end = startIndex + count;
+   const int want = ((startIndex < CORE_MODOUT_SOL0 && end > CORE_MODOUT_LAMP0) ? CORE_PWM_WANT_LAMPS : 0)
+                  | ((startIndex < CORE_MODOUT_GI0 && end > CORE_MODOUT_SOL0) ? CORE_PWM_WANT_SOLS : 0)
+                  | ((startIndex < CORE_MODOUT_SEG0 && end > CORE_MODOUT_GI0) ? CORE_PWM_WANT_GIS : 0)
+                  | ((end > CORE_MODOUT_SEG0) ? CORE_PWM_WANT_SEGMENTS : 0);
+   if ((locals.pwmWanted & want) != want)
+      locals.pwmWanted |= want; // only ever set while a game runs, so a bit lost to a concurrent client is set again by its next call
+}
+
 void core_update_pwm_outputs(const int startIndex, const int count)
 {
-   // HACK timer_get_time is not thread safe and can only be called from emulation thread. Therefore we use a fake timer with timer_starttime which is thread safe as a workaround.
-   // const double now = timer_get_time();
-   mame_timer fake_timer = { 0 };
-   const double now = timer_starttime(&fake_timer);
+   if (!core_on_emulation_thread) {
+      core_want_pwm_outputs(startIndex, count);
+      return;
+   }
+   core_integrate_pwm_outputs(startIndex, count);
+   core_sync_pwm_binary_outputs(startIndex, count);
+}
+
+// Publishes the outputs for the client threads, on the emulation thread: what the output types ask for (as core_update_pwm_lamps & co)
+// and what a client read (core_want_pwm_outputs), at least every CORE_PWM_PUBLISH_PERIOD of emulated time, and right before the
+// emulation waits (time fence, throttle, force = 1), so a client sees the outputs as they are when the emulation stops.
+// A DMD's luminance frame is only published at those waits: its filter costs more, and it blends frames anyway
+#define CORE_PWM_PUBLISH_PERIOD (1. / 1000.)
+static void core_publish_pwm_outputs(int force)
+{
+   if (!coreData)
+      return;
+   const double now = timer_get_time();
+   if (!force && now >= locals.lastPwmPublish && now - locals.lastPwmPublish < CORE_PWM_PUBLISH_PERIOD)
+      return;
+   locals.lastPwmPublish = now;
+   const int wanted = locals.pwmWanted;
+   if (coreGlobals.nLamps && ((options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_LAMPS)) || (wanted & CORE_PWM_WANT_LAMPS)))
+      core_update_pwm_outputs(CORE_MODOUT_LAMP0, coreGlobals.nLamps);
+   if (coreGlobals.nSolenoids && ((options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS | CORE_MODOUT_ENABLE_MODSOL)) || (wanted & CORE_PWM_WANT_SOLS)))
+      core_update_pwm_outputs(CORE_MODOUT_SOL0, coreGlobals.nSolenoids);
+   if (coreGlobals.nGI && ((options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_GI)) || (wanted & CORE_PWM_WANT_GIS)))
+      core_update_pwm_outputs(CORE_MODOUT_GI0, coreGlobals.nGI);
+   if (coreGlobals.nAlphaSegs && ((options.usemodsol & (CORE_MODOUT_FORCE_ON | CORE_MODOUT_ENABLE_PHYSOUT_ALPHASEGS)) || (wanted & CORE_PWM_WANT_SEGMENTS)))
+      core_update_pwm_outputs(CORE_MODOUT_SEG0, coreGlobals.nAlphaSegs);
+   core_dmd_publish(force);
+}
+
+// On/off state of an integrated output, for the FORCE_ON sync below: lamps are on from 0.1, 2 state outputs above 0 (their onValue may be below 1), the others from 0.5
+static int core_pwm_output_is_on(const int index)
+{
+   const core_tPhysicOutput* const output = &coreGlobals.physicOutputState[index];
+   if (index < CORE_MODOUT_LAMP0 + CORE_MODOUT_LAMP_MAX)
+      return output->value >= 0.1f;
+   return output->integrator == &core_update_pwm_output_sol_2_state ? output->value > 0.f : output->value >= 0.5f;
+}
+
+// One output's value: on the emulation thread integrated up to now (without the FORCE_ON sync), on a client thread the published one (see core_update_pwm_outputs)
+float core_get_pwm_output(const int index)
+{
+   if (core_on_emulation_thread)
+      core_integrate_pwm_outputs(index, 1);
+   else
+      core_want_pwm_outputs(index, 1);
+   return coreGlobals.physicOutputState[index].value;
+}
+
+static void core_integrate_pwm_outputs(const int startIndex, const int count)
+{
+   const double now = timer_get_time(); // on the emulation thread only, see core_update_pwm_outputs
    for (int i = 0; i < count; i++)
    {
       const unsigned int index = startIndex + i;
       core_tPhysicOutput* const output = &coreGlobals.physicOutputState[index];
+      const unsigned int pos = output->flipBufferPos;
+      const double onTime = output->onTime;
+      if (pos - output->lastIntegrationFlipPos > FLIP_BUFFER_SIZE / 2)
+         core_replace_lost_pwm_flips(output, index, pos, onTime);
       // Perform integration of flip states that appended since last integration and before now if any
-      while (output->lastIntegrationFlipPos != output->flipBufferPos)
+      while (output->lastIntegrationFlipPos != pos)
       {
-         output->lastIntegrationFlipPos = (output->lastIntegrationFlipPos + 1) % FLIP_BUFFER_SIZE;
-         output->integrator(output->flipTimeStamps[output->lastIntegrationFlipPos], index, TRUE, (output->lastIntegrationFlipPos & 1) ^ 1);
+         output->lastIntegrationFlipPos++;
+         output->integrator(output->flipTimeStamps[output->lastIntegrationFlipPos % FLIP_BUFFER_SIZE], index, TRUE, (output->lastIntegrationFlipPos & 1) ^ 1);
       }
       // Perform integration of stable state up to now
-      output->integrator(now, index, FALSE, output->lastIntegrationFlipPos & 1);
+      output->integrator(now, index, FALSE, pos & 1);
+      // Kept for core_replace_lost_pwm_flips
+      const double lastFlip = output->flipTimeStamps[pos % FLIP_BUFFER_SIZE];
+      output->readTime = now > lastFlip ? now : lastFlip;
+      output->readOnTime = onTime + ((pos & 1) ? output->readTime - lastFlip : 0.);
    }
-   // Also update non PWM data structure if needed
+}
+
+// With FORCE_ON, the on/off bits (lampMatrix, solenoids) follow the integrated outputs: update them for the outputs just integrated
+static void core_sync_pwm_binary_outputs(const int startIndex, const int count)
+{
    if (options.usemodsol & CORE_MODOUT_FORCE_ON)
    {
       if (((options.usemodsol & CORE_MODOUT_ENABLE_PHYSOUT_LAMPS) == 0) && (startIndex < CORE_MODOUT_LAMP0 + CORE_MODOUT_LAMP_MAX) && (startIndex + count >= CORE_MODOUT_LAMP0))
@@ -3278,20 +3900,32 @@ void core_update_pwm_outputs(const int startIndex, const int count)
          {
             UINT8 col = 0;
             for (int j = 0; j < 8; j++)
-               if (coreGlobals.physicOutputState[CORE_MODOUT_LAMP0 + i * 8 + j].value >= 0.1f)
+               if (core_pwm_output_is_on(CORE_MODOUT_LAMP0 + i * 8 + j))
                   col |= (UINT8)1 << j;
             coreGlobals.lampMatrix[i] = col;
          }
       }
+      // Skipped with physical solenoid outputs or modulated solenoids: solenoids then only follows the 2 state outputs (fastOn), not the
+      // other types (e.g. Capcom/SAM flashers), which is fine as all readers then use physicOutputState
       if (((options.usemodsol & (CORE_MODOUT_ENABLE_MODSOL | CORE_MODOUT_ENABLE_PHYSOUT_SOLENOIDS)) == 0) && (startIndex < CORE_MODOUT_SOL0 + CORE_MODOUT_SOL_MAX) && (startIndex + count >= CORE_MODOUT_SOL0))
       {
          UINT32 sols = 0;
          for (int i = 0; i < 32; i++)
-            if (coreGlobals.physicOutputState[CORE_MODOUT_SOL0 + i].value >= 0.5f)
+            if (core_pwm_output_is_on(CORE_MODOUT_SOL0 + i))
                sols |= 1u << i;
          coreGlobals.solenoids = sols;
       }
    }
+}
+
+// Record a flip of an output and the ON time it ends (on the emulation thread, as the integration that reads them)
+INLINE void core_flip_pwm_output(core_tPhysicOutput* const output, const double now)
+{
+   const unsigned int pos = output->flipBufferPos;
+   if (pos & 1)
+      output->onTime += now - output->flipTimeStamps[pos % FLIP_BUFFER_SIZE];
+   output->flipTimeStamps[(pos + 1) % FLIP_BUFFER_SIZE] = now;
+   output->flipBufferPos = pos + 1;
 }
 
 // Write binary state of outputs, taking care of PWM integration based on physical model of the connected device
@@ -3302,9 +3936,7 @@ void core_write_pwm_output(int index, int count, UINT8 bitStates)
    for (int i = 0; i < count; i++, bitStates = bitStates >> 1, index++, output++) {
       const int pos = index >> 3, ofs = index & 7;
       if (((coreGlobals.binaryOutputState[pos] >> ofs) & 1) != (bitStates & 1)) {
-         const unsigned int bufferPos = (output->flipBufferPos + 1) % FLIP_BUFFER_SIZE;
-         output->flipTimeStamps[bufferPos] = now;
-         output->flipBufferPos = bufferPos;
+         core_flip_pwm_output(output, now);
          coreGlobals.binaryOutputState[pos] ^= 1 << ofs;
       }
    }
@@ -3319,11 +3951,7 @@ void core_write_pwm_output_8b(int index, UINT8 bitStates)
    const double now = timer_get_time();
    for (core_tPhysicOutput* output = &coreGlobals.physicOutputState[index]; changeMask; changeMask >>= 1, output++)
       if (changeMask & 1)
-      {
-         const unsigned int bufferPos = (output->flipBufferPos + 1) % FLIP_BUFFER_SIZE;
-         output->flipTimeStamps[bufferPos] = now;
-         output->flipBufferPos = bufferPos;
-      } 
+         core_flip_pwm_output(output, now);
    coreGlobals.binaryOutputState[index >> 3] = bitStates;
 }
 
@@ -3336,11 +3964,7 @@ void core_write_masked_pwm_output_8b(int index, UINT8 bitStates, UINT8 bitMask)
    const double now = timer_get_time();
    for (core_tPhysicOutput* output = &coreGlobals.physicOutputState[index]; changeMask; changeMask >>= 1, output++)
       if (changeMask & 1)
-      {
-         const unsigned int bufferPos = (output->flipBufferPos + 1) % FLIP_BUFFER_SIZE;
-         output->flipTimeStamps[bufferPos] = now;
-         output->flipBufferPos = bufferPos;
-      }
+         core_flip_pwm_output(output, now);
    coreGlobals.binaryOutputState[index >> 3] = (coreGlobals.binaryOutputState[index >> 3] & ~bitMask) | (bitStates & bitMask);
 }
 
@@ -3381,7 +4005,7 @@ void core_write_pwm_output_lamp_matrix(int startIndex, UINT8 columns, UINT8 rows
   common hardware: WPC is 122/3 = 40.7Hz, GTS3 is 376/10 = 37.6Hz, WPC Phantom Haus limits pattern length to 2 to stay above 30Hz,
   so an overall plasma inertia & flicker fusion period of around 30ms (33Hz).
 
-  Filters are computed using the following script in GNU Octave:
+  Filters are computed using the following script in GNU Octave (n is the number of taps of the table in core_dmd_pwm_init, mostly floor(fs/fc) + 1):
 
 pkg load signal
 
@@ -3389,36 +4013,45 @@ fc = 15; % Cut-off frequency (Hz), PWM patterns/frequency suggests something aro
 int_factor = 65535*65530; % Integer arithmetic fixed point scaling
 
 
-% WPC Phantom Haus
-%n = 10
+% WPC Phantom Haus: not computed, the table is a 2 frame average { 255, 255 }
 %fs = 61.05; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;1],100,1)];
 
 % WPC
-%n = 8
+%n = 9
 %fs = 122.1; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;0;1],100,1),repmat([0;1;1],100,1)];
 
 % Data East DMD 128x16
-%n = 8
+%n = 12
 %fs = 177.5; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;0;1],100,1), repmat([1;1;0],100,1), repmat([1;1;1],100,1)];
 
 % Data East DMD 128x32 & Sega/Stern Whitestar & Sega 192x64
-%n = 8
+%n = 15
 %fs = 230.; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;0;1],100,1), repmat([1;1;0],100,1), repmat([1;1;1],100,1)];
 
 % GTS3
-%n = 24
+%n = 26
 %fs = 376.; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;0;0;0;0;0;0;1],30,1), repmat([0;0;0;0;0;1;1;1],30,1)];
 
 % Alvin G
-%n = 10
+%n = 20
 %fs = 298.6; % Sampling rate (Hz) = DMD VBlank
 %fs = 1194.4; % Sampling rate (Hz) = DMD VBlank
 %data=[repmat([0;0;0;1],100,1),repmat([0;1;0;1],100,1),repmat([0;0;1;1],100,1),repmat([0;1;1;1],100,1)];
+
+% Capcom 128x32 (n = 34 would be floor(fs/fc) + 1, see core_dmd_pwm_init)
+%n = 24
+%fs = 508.733; % Sampling rate (Hz) = DMD VBlank
+%data=[repmat([1;0;0;0],100,1),repmat([1;1;0;1],100,1)];
+
+% Capcom 256x64
+%n = 17
+%fs = 254.364; % Sampling rate (Hz) = DMD VBlank
+%data=[repmat([1;0;0;0],100,1),repmat([1;1;0;1],100,1)];
 
 %fs = 230.;
 %n = floor(fs/fc) + 1
@@ -3459,6 +4092,7 @@ void core_dmd_pwm_init(const core_tLCDLayout* layout, const int filter, const in
   {
   case CORE_DMD_PWM_PREINTEGRATED_LINEAR_4: // Pre-integrated PWM frames
   case CORE_DMD_PWM_PREINTEGRATED_SAM:
+  case CORE_DMD_PWM_PREINTEGRATED_LINEAR_16:
      dmd_state->rawFrameSize = dmd_state->frameSize; // Raw frame is already preintegrated, one byte per pixel
      dmd_state->fir_weights = NULL;
      dmd_state->fir_size = 0;
@@ -3508,7 +4142,7 @@ void core_dmd_pwm_init(const core_tLCDLayout* layout, const int filter, const in
       dmd_state->fir_size = dmd_state->nFrames = sizeof(fir_376_15) / sizeof(UINT32);
     }
     break;
-  case CORE_DMD_PWM_FILTER_CAPCOM_128x32: // Capcom 128x32: 508.733Hz refresh rate / 15Hz low pass filter / 3 frame PWM pattern but also uses longer patterns (multiple of 3)
+  case CORE_DMD_PWM_FILTER_CAPCOM_128x32: // Capcom 128x32: 508.733Hz refresh rate / 15Hz low pass filter / 4 frame PWM pattern but also uses longer patterns (multiple of 4)
     {
       // n=34 is better but seems somewhat heavy for our usecase
       // static const UINT32 fir_508_15[] = { 1049808, 2911857, 6143559, 11789924, 20825356, 34023014, 51836988, 74311480, 101028694, 131103153, 163225280, 195751606, 226833801, 254574206, 277192388, 293185732, 301467429, 301467429, 293185732, 277192388, 254574206, 226833801, 195751606, 163225280, 131103153, 101028694, 74311480, 51836988, 34023014, 20825356, 11789924, 6143559, 2911857, 1049808 };
@@ -3517,49 +4151,66 @@ void core_dmd_pwm_init(const core_tLCDLayout* layout, const int filter, const in
       dmd_state->fir_size = dmd_state->nFrames = sizeof(fir_508_15) / sizeof(UINT32);
     }
     break;
-  case CORE_DMD_PWM_FILTER_CAPCOM_256x64: // Capcom 256x64: 254.364Hz refresh rate / 15Hz low pass filter / 3 frame PWM pattern but also uses longer patterns (multiple of 3)
+  case CORE_DMD_PWM_FILTER_CAPCOM_256x64: // Capcom 256x64: 254.364Hz refresh rate / 15Hz low pass filter / 4 frame PWM pattern but also uses longer patterns (multiple of 4)
     {
       static const UINT32 fir_254_15[] = { 3297601, 14786304, 48300768, 117825529, 225575583, 357894749, 487689237, 582921132, 617926745, 582921132, 487689237, 357894749, 225575583, 117825529, 48300768, 14786304, 3297601 };
       dmd_state->fir_weights = fir_254_15;
       dmd_state->fir_size = dmd_state->nFrames = sizeof(fir_254_15) / sizeof(UINT32);
     }
     break;
+  case CORE_DMD_PWM_FILTER_PINHECK_16: // pinHeck raw DMD: 16 subframes of one level each (a dot of value v is lit in v of them), about 785 Hz
+    {
+      static const UINT32 fir_box_16[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }; // any 16 consecutive subframes hold each level once
+      dmd_state->fir_weights = fir_box_16;
+      dmd_state->fir_size = dmd_state->nFrames = sizeof(fir_box_16) / sizeof(UINT32);
+    }
+    break;
   default:
     assert(0); // Unsupported filter
   }
+  // Summed as an integer, so that a dot lit in every frame (same integer total) gives exactly 1.0 (a float sum gave 0.99999994 or 1.0000001).
+  // The per dot accumulator of core_dmd_update_pwm reaches this total, so it must fit in UINT32
+  UINT64 fir_total = 0;
   for (int i = 0; i < dmd_state->fir_size; i++)
-    dmd_state->fir_sum += (float)dmd_state->fir_weights[i];
+    fir_total += dmd_state->fir_weights[i];
+  assert(fir_total <= 0xFFFFFFFFu);
+  dmd_state->fir_sum = (float)(UINT32)fir_total;
   dmd_state->rawFrames = malloc(dmd_state->nFrames * dmd_state->rawFrameSize);
   dmd_state->tempRawFrame = malloc(dmd_state->frameSize * sizeof(UINT8));
   dmd_state->bitplaneFrame = malloc(dmd_state->frameSize * sizeof(UINT8));
   dmd_state->tempFIRBuffer = malloc(dmd_state->frameSize * sizeof(UINT32));
   dmd_state->dmdFIRBuffer = malloc(dmd_state->frameSize * sizeof(UINT32));
   dmd_state->luminanceFrame = malloc(dmd_state->frameSize * sizeof(float));
-  assert(dmd_state->rawFrames != NULL && dmd_state->dmdFIRBuffer != NULL && dmd_state->bitplaneFrame != NULL && dmd_state->luminanceFrame != NULL);
+  assert(dmd_state->rawFrames != NULL && dmd_state->tempRawFrame != NULL && dmd_state->bitplaneFrame != NULL && dmd_state->tempFIRBuffer != NULL && dmd_state->dmdFIRBuffer != NULL && dmd_state->luminanceFrame != NULL);
   memset(dmd_state->rawFrames, 0, dmd_state->nFrames * dmd_state->rawFrameSize);
   memset(dmd_state->dmdFIRBuffer, 0, dmd_state->frameSize * sizeof(UINT32));
   memset(dmd_state->bitplaneFrame, 0, dmd_state->frameSize * sizeof(UINT8));
   memset(dmd_state->luminanceFrame, 0, dmd_state->frameSize * sizeof(float));
   dmd_state->nextFrame = 0;
+  for (int i = 0; i < 3; i++) {
+    dmd_state->pubLum[i] = (float*)calloc(dmd_state->frameSize, sizeof(float));
+    dmd_state->pubRaw[i] = (UINT8*)calloc(dmd_state->frameSize, sizeof(UINT8));
+    assert(dmd_state->pubLum[i] != NULL && dmd_state->pubRaw[i] != NULL);
+  }
+  dmd_state->pubLumFront = dmd_state->pubRawFront = 0;
+  dmd_state->pubLumState = dmd_state->pubRawState = 1;
+  dmd_state->pubLumBack  = dmd_state->pubRawBack  = 2;
+  dmd_state->pubLumLast  = dmd_state->pubRawLast  = ~0u;
 }
 
 void core_dmd_submit_frame(const core_tLCDLayout* layout, const UINT8* frame, const int ntimes) {
   core_tDMDPWMState* dmd_state = locals.dmdStates[layout->index];
   for (int i = 0; i < ntimes; i++) {
     memcpy(dmd_state->rawFrames + dmd_state->nextFrame * dmd_state->rawFrameSize, frame, dmd_state->rawFrameSize);
-    // Update circular buffer position after writing the frame to allow concurrent PWM update
-    // (if the compiler/CPU reorder this instruction we may have visual glitches)
+    // Update circular buffer position after writing the frame (the filters reading it run on this thread too, see core_dmd_update_pwm)
     int nf = (dmd_state->nextFrame + 1) % dmd_state->nFrames;
     atomic_exchange_int(&dmd_state->nextFrame, nf);
-    atomic_increment(&dmd_state->frame_index);
+    atomic_increment((volatile int*)&dmd_state->frame_index);
   }
 }
 
-// PWM update must be done at the render frequency, therefore this function may be called concurrently from the 
-// frame submission by the emulated hardware. To avoid synchronization, a simple circular buffer with consumer
-// accessing data before barrier, and provider pushing data after the barrier is used and should be enough (we do
-// not use synchronization primitives, so this can fail if instructions are reordered).
-float* core_dmd_update_pwm(const core_tLCDLayout* layout, unsigned int * lumFrameId) {
+// Luminance of the frames submitted so far, on the emulation thread (as the submission): for its own display update, and for the clients through core_dmd_publish
+static float* core_dmd_compute_pwm(const core_tLCDLayout* layout, unsigned int * lumFrameId) {
    core_tDMDPWMState* const dmd_state = locals.dmdStates[layout->index];
 
    const volatile int nf = dmd_state->nextFrame;
@@ -3575,7 +4226,7 @@ float* core_dmd_update_pwm(const core_tLCDLayout* layout, unsigned int * lumFram
    switch (dmd_state->raw_combiner) {
    case CORE_DMD_PWM_PREINTEGRATED_LINEAR_4:
    {
-      const UINT8* frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
+      const UINT8* const frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
       if (memcmp(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8)) != 0) {
          memcpy(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8));
          dmd_state->lumFrameId++;
@@ -3586,9 +4237,21 @@ float* core_dmd_update_pwm(const core_tLCDLayout* layout, unsigned int * lumFram
       break;
    }
 
+   case CORE_DMD_PWM_PREINTEGRATED_LINEAR_16: // Stern SPIKE 1: 16 regularly spread shades (bitplanes shown 1/2/4/8 periods)
+   {
+      const UINT8* const frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
+      if (memcmp(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8)) != 0) {
+         memcpy(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8));
+         dmd_state->lumFrameId++;
+         for (int jj = 0; jj < dmd_state->frameSize; jj++)
+            dmd_state->luminanceFrame[jj] = (float)(frameData[jj] & 15) * (float)(1. / 15.);
+      }
+      break;
+   }
+
    case CORE_DMD_PWM_PREINTEGRATED_SAM:
    {
-      const UINT8* frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
+      const UINT8* const frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
       if (memcmp(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8)) != 0) {
          memcpy(dmd_state->dmdFIRBuffer, frameData, dmd_state->frameSize * sizeof(UINT8));
          dmd_state->lumFrameId++;
@@ -3672,7 +4335,26 @@ float* core_dmd_update_pwm(const core_tLCDLayout* layout, unsigned int * lumFram
    return dmd_state->luminanceFrame;
 }
 
-UINT8* core_dmd_update_identify(const core_tLCDLayout* layout, unsigned int * rawFrameId)
+// The DMD frames as a caller sees them. The filters run on the emulation thread only, so their state has a single writer. Its own
+// callers (display update, libpinmame display callbacks) get the frame computed now. A client thread (libpinmame plugin, remote debugger)
+// gets the frame core_dmd_publish published last, through a triple buffer: the emulation thread fills its back buffer and swaps it with
+// the middle one, the client swaps the middle one with its front buffer when there is a new frame, so the frame it holds is never written
+// until it asks again. That holds for one client thread per frame type and display: with several (VPX: renderer, DMDUtil, UpscaleDMD;
+// Serum or VNI with B2S) a held frame may still be overwritten, as any frame could be before. A frame copied into the caller's buffer
+// would fix that (plugin API change). The client marks the frame type wanted, so the filters only run for the clients once one reads
+float* core_dmd_update_pwm(const core_tLCDLayout* layout, unsigned int * lumFrameId) {
+   if (core_on_emulation_thread)
+      return core_dmd_compute_pwm(layout, lumFrameId);
+   core_tDMDPWMState* const dmd_state = locals.dmdStates[layout->index];
+   dmd_state->pubLumWanted = 1;
+   if (dmd_state->pubLumState & 4)
+      dmd_state->pubLumFront = atomic_exchange_int(&dmd_state->pubLumState, dmd_state->pubLumFront) & 3;
+   *lumFrameId = dmd_state->pubLumId[dmd_state->pubLumFront];
+   return dmd_state->pubLum[dmd_state->pubLumFront];
+}
+
+// Bitplane frame of the frames submitted so far, on the emulation thread (see core_dmd_compute_pwm)
+static UINT8* core_dmd_compute_identify(const core_tLCDLayout* layout, unsigned int * rawFrameId)
 {
   core_tDMDPWMState* const dmd_state = locals.dmdStates[layout->index];
 
@@ -3690,6 +4372,7 @@ UINT8* core_dmd_update_identify(const core_tLCDLayout* layout, unsigned int * ra
   switch (dmd_state->raw_combiner) {
   case CORE_DMD_PWM_PREINTEGRATED_LINEAR_4: // Pre-integrated PWM frames, nothing to do beside a copy (could be optimized to avoid the copy but kept for simplicity)
   case CORE_DMD_PWM_PREINTEGRATED_SAM:
+  case CORE_DMD_PWM_PREINTEGRATED_LINEAR_16:
      assert(dmd_state->rawFrameSize == dmd_state->frameSize);
      memcpy(dmd_state->tempRawFrame, dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize, dmd_state->rawFrameSize);
      break;
@@ -3697,23 +4380,15 @@ UINT8* core_dmd_update_identify(const core_tLCDLayout* layout, unsigned int * ra
      {
         UINT8* rawData = dmd_state->tempRawFrame;
         const UINT8* frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - 1)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
+        // Same bit order as the luminance filter: first dot in bit 0 for reversed bytes, in bit 7 otherwise
         const int width_remaining = dmd_state->width & 7;
-        if (width_remaining == 0) {
-           for (int jj = 0; jj < dmd_state->rawFrameSize; jj++) {
-              UINT8 data = *frameData++;
-              for (int kk = 0; kk < 8; kk++, data <<= 1, rawData++)
-                 (*rawData) = data & 0x01;
-           }
-        }
-        else {
-           const int width_bytes = (dmd_state->width + 7) / 8;
-           for (int kk = 0; kk < dmd_state->height; kk++) {
-              for (int jj = 0; jj < width_bytes; jj++) {
-                 UINT8 data = *frameData++;
-                 const int n = (jj == width_bytes - 1) ? width_remaining : 8;
-                 for (int ll = 0; ll < n; ll++, data <<= 1, rawData++)
-                    (*rawData) = data & 0x01;
-              }
+        const int width_bytes = (dmd_state->width + 7) / 8;
+        for (int kk = 0; kk < dmd_state->height; kk++) {
+           for (int jj = 0; jj < width_bytes; jj++) {
+              const UINT8 data = *frameData++;
+              const int n = (width_remaining != 0 && jj == width_bytes - 1) ? width_remaining : 8;
+              for (int ll = 0; ll < n; ll++, rawData++)
+                 (*rawData) = (data >> (dmd_state->revByte ? ll : 7 - ll)) & 0x01;
            }
         }
      }
@@ -3858,18 +4533,79 @@ UINT8* core_dmd_update_identify(const core_tLCDLayout* layout, unsigned int * ra
       }
     }
     break;
+  case CORE_DMD_PWM_COMBINER_SUM_16: // Sum of the last 16 frames (pinHeck raw DMD: one subframe per level, the level-15 one always dark, so 0-15)
+    {
+      assert((dmd_state->width & 7) == 0 && dmd_state->nFrames >= 16);
+      memset(dmd_state->tempRawFrame, 0, dmd_state->frameSize);
+      for (int i = 1; i <= 16; i++) {
+        UINT8* rawData = dmd_state->tempRawFrame;
+        const UINT8* frameData = dmd_state->rawFrames + ((nf + (dmd_state->nFrames - i)) % dmd_state->nFrames) * dmd_state->rawFrameSize;
+        for (int kk = 0; kk < dmd_state->rawFrameSize; kk++)
+          for (UINT8 ll = 0, data = *frameData++; ll < 8; ll++, data <<= 1)
+            (*rawData++) += (data >> 7);
+      }
+      for (int kk = 0; kk < dmd_state->frameSize; kk++)
+        if (dmd_state->tempRawFrame[kk] > 15) dmd_state->tempRawFrame[kk] = 15;
+    }
+    break;
   default:
     assert(0); // Unsupported combiner
   }
-  
+
   // Evaluate change index
   if (memcmp(dmd_state->bitplaneFrame, dmd_state->tempRawFrame, dmd_state->frameSize) != 0) {
      memcpy(dmd_state->bitplaneFrame, dmd_state->tempRawFrame, dmd_state->frameSize);
      dmd_state->rawFrameId++;
   }
-  
+
   *rawFrameId = dmd_state->rawFrameId;
   return dmd_state->bitplaneFrame;
+}
+
+// The bitplane frame as a caller sees it (see core_dmd_update_pwm)
+UINT8* core_dmd_update_identify(const core_tLCDLayout* layout, unsigned int * rawFrameId)
+{
+   if (core_on_emulation_thread)
+      return core_dmd_compute_identify(layout, rawFrameId);
+   core_tDMDPWMState* const dmd_state = locals.dmdStates[layout->index];
+   dmd_state->pubRawWanted = 1;
+   if (dmd_state->pubRawState & 4)
+      dmd_state->pubRawFront = atomic_exchange_int(&dmd_state->pubRawState, dmd_state->pubRawFront) & 3;
+   *rawFrameId = dmd_state->pubRawId[dmd_state->pubRawFront];
+   return dmd_state->pubRaw[dmd_state->pubRawFront];
+}
+
+// Publishes the DMD frames a client thread reads (core_dmd_update_pwm), on the emulation thread with the outputs: the bitplane frames
+// at each publish, so that short frames (a ROM may show frames of 2..4 ms) reach the colorization, the luminance frames with force only
+static void core_dmd_publish(const int force)
+{
+   for (int i = 0; i < 16; i++) {
+      core_tDMDPWMState* const dmd_state = locals.dmdStates[i];
+      if (dmd_state == NULL)
+         continue;
+      if (force && dmd_state->pubLumWanted) {
+         unsigned int id;
+         const float* const frame = core_dmd_compute_pwm(dmd_state->layout, &id);
+         const int back = dmd_state->pubLumBack;
+         if (id != dmd_state->pubLumLast) {
+            dmd_state->pubLumLast = id;
+            memcpy(dmd_state->pubLum[back], frame, dmd_state->frameSize * sizeof(float));
+            dmd_state->pubLumId[back] = id;
+            dmd_state->pubLumBack = atomic_exchange_int(&dmd_state->pubLumState, back | 4) & 3;
+         }
+      }
+      if (dmd_state->pubRawWanted) {
+         unsigned int id;
+         const UINT8* const frame = core_dmd_compute_identify(dmd_state->layout, &id);
+         const int back = dmd_state->pubRawBack;
+         if (id != dmd_state->pubRawLast) {
+            dmd_state->pubRawLast = id;
+            memcpy(dmd_state->pubRaw[back], frame, dmd_state->frameSize);
+            dmd_state->pubRawId[back] = id;
+            dmd_state->pubRawBack = atomic_exchange_int(&dmd_state->pubRawState, back | 4) & 3;
+         }
+      }
+   }
 }
 
 
@@ -3923,6 +4659,21 @@ void core_sound_throttle_adj(int sIn, int *sOut, int buffersize, double samplera
       SetThrottleAdj(0);
    }
 }
+
+#ifdef REMOTE_DEBUG
+void core_get_dmd_data(int layout_idx, float **pixels, int *width, int *height) {
+  if (layout_idx >= 0 && layout_idx < 16 && locals.dmdStates[layout_idx]) {
+    unsigned int lumFrameId;
+    *pixels = core_dmd_update_pwm(locals.dmdStates[layout_idx]->layout, &lumFrameId);
+    *width = locals.dmdStates[layout_idx]->width;
+    *height = locals.dmdStates[layout_idx]->height;
+  } else {
+    *pixels = NULL;
+    *width = 0;
+    *height = 0;
+  }
+}
+#endif
 
 /*----------------------------------------------
 /  Add a timer when building the machine driver

@@ -73,6 +73,37 @@ copy /V /-Y "LibPinMAMETest_VC2015.vcxproj.filters" "LibPinMAMETest_VC2019.vcxpr
 @cscript "simplereplace.wsf" //nologo /search:"<PreprocessorDefinitions>" /replace:"<PreprocessorDefinitions>PINMAME_JIT_ASMJIT;" /in:"VPinMAME_VC2019.vcxproj" /out:"VPinMAME_VC2019.vcxproj"
 @if errorlevel 1 goto manual
 
+@rem --- enable the Pinball 2000 subsystem (src/p2k) as v141+ toolset is C++17-capable
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'p2k.props^' /></Project>" /in:"LibPinMAME_VC2019.vcxproj" /out:"LibPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'p2k.props^' /></Project>" /in:"PinMAME_VC2019.vcxproj" /out:"PinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'p2k.props^' /></Project>" /in:"PinMAME32_VC2019.vcxproj" /out:"PinMAME32_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'p2k.props^' /></Project>" /in:"VPinMAME_VC2019.vcxproj" /out:"VPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+
+@rem --- define HAS_MEDIAGX project-wide: src/cpuintrf.c tests it to register the
+@rem     MediaGX and src/wpc/driver.c tests it to list the games
+@cscript "simplereplace.wsf" //nologo /search:"<PreprocessorDefinitions>" /replace:"<PreprocessorDefinitions>HAS_MEDIAGX=1;" /in:"LibPinMAME_VC2019.vcxproj" /out:"LibPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /search:"<PreprocessorDefinitions>" /replace:"<PreprocessorDefinitions>HAS_MEDIAGX=1;" /in:"PinMAME_VC2019.vcxproj" /out:"PinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /search:"<PreprocessorDefinitions>" /replace:"<PreprocessorDefinitions>HAS_MEDIAGX=1;" /in:"PinMAME32_VC2019.vcxproj" /out:"PinMAME32_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /search:"<PreprocessorDefinitions>" /replace:"<PreprocessorDefinitions>HAS_MEDIAGX=1;" /in:"VPinMAME_VC2019.vcxproj" /out:"VPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+
+@rem --- enable the Stern SPIKE 1 subsystem (src/spike1) as v141+ toolset is C++17-capable: as in CMake: in
+@rem     LibPinMAME, PinMAME and VPinMAME, on x64 only (a title's asset image is over 1 GB). spike1.props defines
+@rem     HAS_SPIKE1 itself, so that it follows the import's platform condition
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'spike1.props^' Condition=^''$(Platform)'=='x64'^' /></Project>" /in:"LibPinMAME_VC2019.vcxproj" /out:"LibPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'spike1.props^' Condition=^''$(Platform)'=='x64'^' /></Project>" /in:"PinMAME_VC2019.vcxproj" /out:"PinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+@cscript "simplereplace.wsf" //nologo /replacequotes /search:"</Project>" /replace:"  <Import Project=^'spike1.props^' Condition=^''$(Platform)'=='x64'^' /></Project>" /in:"VPinMAME_VC2019.vcxproj" /out:"VPinMAME_VC2019.vcxproj"
+@if errorlevel 1 goto manual
+
 @goto end
 
 :manual

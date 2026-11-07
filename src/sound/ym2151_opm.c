@@ -297,7 +297,7 @@ INLINE uint16_t OPM_LFOApplyPMS(const uint8_t lfo, const uint8_t pms)
     {
         top >>= 1;
     }
-    t = (top & 6) == 6 || ((top & 3) == 3 && pms >= 6);
+    t = ((top & 6) == 6 && pms == 7) || ((top & 3) == 3 && pms >= 6);
 
     out = (uint16_t)top + ((top >> 2) & 1) + t;
     out = out * 2 + ((lfo >> 4) & 1);
@@ -364,7 +364,7 @@ INLINE int32_t OPM_CalcKCode(const uint16_t kcf, uint16_t lfo, const bool lfo_si
     {
         sum += 64;
     }
-    if (!lfo_sign && !cr)
+    if (!lfo_sign && !cr && (lfo & 192) != 0)
     {
         sum += (-64)&8191;
         negoverflow = 1;
@@ -1523,7 +1523,7 @@ INLINE void OPM_DoLFO1(opm_t* const chip)
 
     chip->lfo_counter3_clock = (chip->cycles & 15) == 13 && chip->lfo_counter2_of_lock2;
 
-    if ((chip->cycles & 15) == 15)
+    if ((chip->cycles & 15) == 15 && (chip->lfo_bit_counter & 7) == 0)
     {
         chip->lfo_trig_sign = (chip->lfo_val & 0x80);
         chip->lfo_saw_sign = (chip->lfo_val & 0x100);
@@ -2160,10 +2160,6 @@ void OPM_Clock(opm_t* const chip, int16_t * const output, bool * const sh1, bool
 
 void OPM_Write(opm_t* const chip, const uint8_t port, const uint8_t data)
 {
-#ifdef PINMAME
-    vgm_write(chip->vgm_idx, 0x00, port, data);
-#endif
-
     chip->write_data = data;
     if (chip->ic)
     {
@@ -2171,10 +2167,20 @@ void OPM_Write(opm_t* const chip, const uint8_t port, const uint8_t data)
     }
     if (port & 0x01)
     {
+#ifdef PINMAME
+        /* VGM wants (register, data) pairs, but port here is only 0 = address / 1 = data,
+           and mode_address is not latched until the next OPM_Clock - so pair the data byte
+           with the address byte we saw go past. Logging on the data write also keeps the
+           buffered writes in OPM_WriteBuffered in order */
+        vgm_write(chip->vgm_idx, 0x00, chip->vgm_lastreg, data);
+#endif
         chip->write_d = 1;
     }
     else
     {
+#ifdef PINMAME
+        chip->vgm_lastreg = data;
+#endif
         chip->write_a = 1;
     }
 }

@@ -380,7 +380,7 @@ static READ_HANDLER (pia2a_r) { return core_getDip(0)<<7; }
 static WRITE_HANDLER(pia2a_w) {
   // To keep things simple, we only emulate PWM by turning to 0 when digit change, then latching the lit segments. This is not fully right but okish enough.
   //printf("%8.5f Digit: %02d\n", timer_get_time(), data & 0x0f);
-  for (int i = 0; i < (coreGlobals.nAlphaSegs / 8); i+= 8)
+  for (int i = 0; i < coreGlobals.nAlphaSegs; i+= 8)
     core_write_pwm_output_8b(CORE_MODOUT_SEG0 + i, 0);
   locals.digSel = data & 0x0f;
   if (core_gameData->hw.display & S11_BCDDIAG)
@@ -656,6 +656,10 @@ static READ_HANDLER(pia4a_r)
 /*-- Sound board sound command--*/
 static WRITE_HANDLER(pia5b_w) {
   locals.sndCmd = data; sndbrd_1_data_w(0,data);
+  /* with the sound overlay board, 00-1F drive the overlay's solenoids and are not strobed
+     to the sound board (pia5cb2_w): log the sound commands only (data log off, see init) */
+  if ((core_gameData->hw.gameSpecific1 & S11_SNDOVERLAY) && (data & 0xe0))
+    snd_cmd_log(1, data);
 }
 
 /*-- Sound board sound command available --*/
@@ -847,6 +851,8 @@ static MACHINE_INIT(s11) {
     case GEN_S11X:
       sndbrd_0_init(SNDBRD_S11XS, 2, memory_region(S11XS_ROMREGION), NULL, NULL);
       sndbrd_1_init(SNDBRD_S11CS, 1, memory_region(S11CS_ROMREGION), pia_5_cb1_w, NULL);
+      if (core_gameData->hw.gameSpecific1 & S11_SNDOVERLAY)
+        sndbrd_logData(1, 0); // pia5b_w logs the sound commands
       break;
     case GEN_S11B2:
       sndbrd_0_init(SNDBRD_S11BS, 2, memory_region(S11XS_ROMREGION), NULL, NULL);
@@ -984,10 +990,10 @@ static MACHINE_INIT(s11) {
   }
   else if (strncasecmp(gn, "f14_", 4) == 0) { // F14
      core_set_pwm_output_type(CORE_MODOUT_SOL0 +  9 - 1, 1, CORE_MODOUT_BULB_89_25V_DC_S11);
-     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 10 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // Playfield GI output
-     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 11 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // Backbox GI output
+     // Solenoid 10 is the center left eject coil, not a GI relay
+     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 11 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // GI output
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 15 - 1, 1, CORE_MODOUT_BULB_89_25V_DC_S11);
-     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 25 - 1, 8, CORE_MODOUT_BULB_89_25V_DC_S11); // 8 muxed flasher outputs (Mux relay is solenoid #12)
+     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 25 - 1, 8, CORE_MODOUT_BULB_89_25V_DC_S11); // 8 muxed flasher outputs (Mux relay is solenoid #14)
   }
   else if (strncasecmp(gn, "fire_", 5) == 0) { // Fire
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 10 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // Playfield GI output
@@ -1114,8 +1120,9 @@ static MACHINE_INIT(s11) {
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 11 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // Upper Playfield GI output
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 16 - 1, 1, CORE_MODOUT_BULB_44_6_3V_AC_REV); // Backbox and Lower playfield GI output
      core_set_pwm_output_type(CORE_MODOUT_SOL0 + 25 - 1, 8, CORE_MODOUT_BULB_89_25V_DC_S11); // 8 muxed flasher outputs (Mux relay is solenoid #12)
-     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 40 - 1, 2, CORE_MODOUT_BULB_89_25V_DC_S11); // Sound Overlay Board #1 (1-8 -> 40-47)
-     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 42 - 1, 1, CORE_MODOUT_BULB_89_25V_DC_S11); // Sound Overlay Board #3 & 4 (1-8 -> 40-47)
+     // Sound Overlay Board outputs 1-5 are in slots 40-44 (solenoids 37-41): 1 BP Lightning (L) flashers, 2 Blower motor (via triac board), 3 BP Thunder (M) flasher, 4 BP Thunder (R) flashers, 5 Spin wheels motor
+     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 40, 1, CORE_MODOUT_BULB_89_25V_DC_S11); // Sound Overlay Board #1
+     core_set_pwm_output_type(CORE_MODOUT_SOL0 + 42, 2, CORE_MODOUT_BULB_89_25V_DC_S11); // Sound Overlay Board #3 & 4
   }
 
   // DataEast Protoype

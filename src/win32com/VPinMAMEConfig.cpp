@@ -28,6 +28,7 @@ extern "C" {
   #include "driver.h"
   #include "rc.h"
   #include "misc.h"
+  #include "core.h"
 
   extern struct rc_option fileio_opts[];
   extern struct rc_option input_opts[];
@@ -40,8 +41,8 @@ extern "C" {
   // Global options
   int verbose = 0;
   /* pinDMD */
-  extern char g_fShowPinDMD;
-  extern char g_fShowWinDMD;
+  extern int g_fShowPinDMD;
+  extern int g_fShowWinDMD;
   extern int g_low_latency_throttle;
   int g_cpu_affinity_mask = 0;
 }
@@ -361,9 +362,13 @@ void vpm_game_init(int game_index) {
 	blit_flipx = ((orientation & ORIENTATION_FLIP_X) != 0);
 	blit_flipy = ((orientation & ORIENTATION_FLIP_Y) != 0);
 	blit_swapxy = ((orientation & ORIENTATION_SWAP_XY) != 0);
+
+	/* the record/playback settings: keys in <name>.inp, switches set by the table in <name>.sw */
+	core_inputlog_open(game_index, (const char*)get_option("record"), (const char*)get_option("playback"));
 }
 
 void vpm_game_exit(int game_index) {
+  core_inputlog_close();
   /* close open files */
   if (options.language_file) /* this seems to never be opened in Win32 version */
     { mame_fclose(options.language_file); options.language_file = NULL; }

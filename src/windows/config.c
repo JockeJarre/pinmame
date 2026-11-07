@@ -55,6 +55,20 @@ extern struct rc_option video_opts[];
 
 #ifdef PINMAME
 struct rc_option core_opts[];
+static int config_handle_rtc(struct rc_option *option, const char *arg, int priority)
+{
+	/* rc leaves recording the priority to callbacks; without it an ini, read after the command line, would override it */
+	if (rtc_set_start(arg))
+		return -1;
+	option->priority = priority;
+	return 0;
+}
+
+static int config_handle_dip(struct rc_option *option, const char *arg, int priority)
+{
+	return dip_override_add(arg, priority);
+}
+
 struct rc_option pinmame_opts[] = {
         /* PinMAME options */
         { "PinMAME options", NULL, rc_seperator, NULL, NULL, 0, 0, NULL, NULL },
@@ -83,6 +97,10 @@ struct rc_option pinmame_opts[] = {
         { "dmd_green0", NULL, rc_int, &pmoptions.dmd_green0, "0", 0, 255, NULL, "Colorized DMD: 0%: Green" },
         { "dmd_blue0", NULL, rc_int, &pmoptions.dmd_blue0, "0", 0, 255, NULL, "Colorized DMD: 0%: Blue" },
         { "dmd_opacity", NULL, rc_int, &pmoptions.dmd_opacity, "100", 0, 100, NULL, "DMD opacity" },
+        { "key_script", NULL, rc_string, &pmoptions.key_script, NULL, 0, 0, NULL, "File of scripted keyboard events" },
+        { "dmd_dump_dir", NULL, rc_string, &pmoptions.dmd_dump_dir, NULL, 0, 0, NULL, "Directory to write the DMD frame dump to" },
+        { "dip", NULL, rc_use_function, NULL, NULL, 0, 0, config_handle_dip, "Set a DIP switch: \"<name>=<setting>\", repeatable" },
+        { "rtc", NULL, rc_use_function, NULL, NULL, 0, 0, config_handle_rtc, "Fix the emulated real-time clock: \"YYYY-MM-DD HH:MM[:SS]\"" },
         { "resampling_quality", NULL, rc_int, &pmoptions.resampling_quality, "0", 0, 1, NULL, "Quality of the resampling implementation (0=Fast,1=Normal)" },
 #if defined(VPINMAME_ALTSOUND) || defined(VPINMAME_PINSOUND)
         { "sound_mode", NULL, rc_int, &pmoptions.sound_mode, "0", 0, 3, NULL, "Sound processing mode (PinMAME, Alternative, PinSound, PinSound + Recordings)" },
@@ -95,6 +113,7 @@ struct rc_option pinmame_opts[] = {
 #endif /* PROC_SUPPORT */
         { "vgmwrite", NULL, rc_bool, &pmoptions.vgmwrite, "0", 0, 0, NULL, "Enable to write a VGM of the current session (name is based on romname)" },
         { "force_stereo", NULL, rc_bool, &pmoptions.force_mono_to_stereo, "0", 0, 0, NULL, "Always force stereo output (e.g. to better support multi channel sound systems)" },
+        { "bsmt2000_lle", NULL, rc_bool, &pmoptions.bsmt2000_lle, "0", 0, 0, NULL, "BSMT2000 sound: run the chip's own program (needs bsmt2000.bin, uses more CPU) instead of the high level emulation" },
 #ifdef PINMAME_HOST_UART
         { "serial_device", NULL, rc_string, &pmoptions.serial_device, NULL, 0, 0, NULL, "COM port mapped to WPC UART" },
 #endif
@@ -519,6 +538,7 @@ int cli_frontend_init (int argc, char **argv)
                         fprintf(stderr, "failed to open %s for playback\n", playbackname);
                         exit(1);
                 }
+                options.playback_name = playbackname;
         }
 
         /* check for game name embedded in .inp header */
@@ -635,6 +655,7 @@ int cli_frontend_init (int argc, char **argv)
                         fprintf(stderr, "failed to open %s for recording\n", recordname);
                         exit(1);
                 }
+                options.record_name = recordname;
         }
 
         if (options.record)

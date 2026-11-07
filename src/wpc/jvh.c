@@ -96,7 +96,7 @@ static WRITE_HANDLER(bcd_w) {
 }
 
 static WRITE_HANDLER(panel_w) {
-  if (data) locals.segments[offset*8 + core_BitColToNum(~locals.latch & 0xff)].w = core_bcd2seg7[0x0f ^ locals.bcd];
+  if (data) locals.segments[offset*8 + core_LowestBitColToNum(~locals.latch & 0xff)].w = core_bcd2seg7[0x0f ^ locals.bcd];
 }
 
 static WRITE_HANDLER(snd_w) {
@@ -329,6 +329,8 @@ static WRITE_HANDLER(vol2_w) {
   }
 }
 
+// TODO VIA6522_ACCURATE: not adapted, keeps the old core. Check the IRQ/FIRQ wiring and timer use against the accurate core's
+// semantics before setting accurate here
 static const struct via6522_interface jvh_via[] = {{
   /*i: A/B,CA/B1,CA/B2 */ jvh_via_a_r, 0, 0, 0, 0, 0,
   /*o: A/B,CA/B2       */ jvh_via_a_w, jvh_via_b_w, 0, 0,
@@ -340,8 +342,10 @@ static const struct via6522_interface jvh_via[] = {{
 }};
 
 static void jvh_init(struct sndbrdData *brdData) {
-  via_reset();
+  // Config first, like the other drivers: via_reset picks the core and the timers from the configured interface,
+  // and before via_config it would still see the previous game's one (e.g. GTS3's accurate VIA in VPinMAME/libpinmame)
   via_config(0, &jvh_via[brdData->subType ? 1 : 0]);
+  via_reset();
   memset(&sndlocals, 0, sizeof(sndlocals));
   sndlocals.brdData = *brdData;
 }
@@ -371,14 +375,14 @@ static int jvh_sw2m(int no) {
 }
 static int jvh_m2sw(int col, int row) {
   if (col < 1) return row-7;
-  return (col-1)*10 + row;
+  return (col-1)*10 + row + 1;
 }
 
 MACHINE_DRIVER_START(jvh)
   MDRV_IMPORT_FROM(PinMAME)
   MDRV_CORE_INIT_RESET_STOP(jvh,jvh,jvh)
-  MDRV_SCREEN_SIZE(640+CORE_SCREENX_INC,400)
-  MDRV_VISIBLE_AREA(0, 639+CORE_SCREENX_INC, 0, 399)
+  MDRV_SCREEN_SIZE(640,400)
+  MDRV_VISIBLE_AREA(0, 639, 0, 399)
 
   MDRV_CPU_ADD_TAG("mcpu", TMS9980, 1000000) // ~8MHz, divided by 8?
   MDRV_CPU_MEMORY(readmem, writemem)
@@ -643,7 +647,7 @@ static INTERRUPT_GEN(vblank3) {
   for (i = 0; i < 40; i++) {
     UINT16 segs = 0xf8a0 + 4 * (i / 8) + (locals.disp_cnt < 8 ? 0 : 2);
     segs = (memory_region(REGION_CPU1)[segs] << 8) | memory_region(REGION_CPU1)[segs + 1];
-    segs = core_ascii2seg16[0x7f & memory_region(REGION_CPU1)[segs + i % 8]];
+    segs = core_ascii2seg16[0x7f & memory_region(REGION_CPU1)[(UINT16)(segs + i % 8)]]; // the pointer comes from RAM, wrap like the 16 bit address bus
     coreGlobals.segments[i].w = i < 16 ? segs : (segs & 0x7f) | ((segs & 0x200) >> 8) | ((segs & 0x2000) >> 11);
   }
   locals.disp_cnt = (locals.disp_cnt + 1) % 16;
@@ -816,7 +820,8 @@ static DISCRETE_SOUND_START(discInt)
 	DISCRETE_MULTADD(NODE_03,1,NODE_01,1,200)
 	DISCRETE_TRIANGLEWAVE(NODE_04,NODE_02,NODE_03,20000,10000,0)
 	DISCRETE_GAIN(NODE_05,NODE_04,1)
-	DISCRETE_OUTPUT(NODE_05,20)
+	/* Unipolar (a triangle of BIAS 10000, even in silence: a disabled wave node outputs its BIAS), hence _AC to correct/center around 0 */
+	DISCRETE_OUTPUT_AC(NODE_05,20)
 DISCRETE_SOUND_END
 
 // driver section
