@@ -31,12 +31,12 @@ onwards** is listed separately below as not expected rather than as missing.
 
 | Status                           | Machines | Share |
 | -------------------------------- | -------: | ----: |
-| Fully working                    |      584 | 70.0% |
+| Fully working                    |      584 | 69.9% |
 | Partially working                |       31 |  3.7% |
 | Emulated but not working         |        0 |  0.0% |
 | Not emulated                     |      141 | 16.9% |
-| Not emulated — released recently |       78 |  9.4% |
-| **Total**                        |  **834** |       |
+| Not emulated — released recently |       79 |  9.5% |
+| **Total**                        |  **835** |       |
 
 ### By decade
 
@@ -47,7 +47,7 @@ onwards** is listed separately below as not expected rather than as missing.
 | 1990s  |   148 |           142 |       3 |           0 |            3 |
 | 2000s  |    25 |            24 |       0 |           0 |            1 |
 | 2010s  |    73 |            24 |       0 |           0 |           49 |
-| 2020s  |    90 |             1 |       0 |           0 |           89 |
+| 2020s  |    91 |             1 |       0 |           0 |           90 |
 
 ## Fully working (584)
 
@@ -837,7 +837,7 @@ future work.
 | Shoot 'n Scoot                              | 2020 | Multimorphic              | LCD          |
 | Teenage Mutant Ninja Turtles                | 2020 | Stern                     | LCD          |
 
-## Not emulated — released recently (78)
+## Not emulated — released recently (79)
 
 No driver, and not expected to get one soon: see the note on end-of-life machines above.
 
@@ -908,6 +908,7 @@ No driver, and not expected to get one soon: see the note on end-of-life machine
 | Star Wars: Fall of the Empire                     | 2025 | Stern                    | LCD          |
 | The Walking Dead Remastered                       | 2025 | Stern                    | LCD          |
 | Winchester Mystery House                          | 2025 | Barrels of Fun           | LCD          |
+| AC/DC Remastered                                  | 2026 | Stern                    | LCD          |
 | Bon Jovi                                          | 2026 | Barrels of Fun           | LCD          |
 | Carni-Ball Night                                  | 2026 | Deluxia Studios          | LCD          |
 | Dungeon Crawler Carl                              | 2026 | Multimorphic             | LCD          |
@@ -1150,8 +1151,8 @@ scripts/gen_supported_machines.py
 
 The script reads a cached copy of OPDB and re-downloads only with `--refresh`; `--check`
 fails if this file is out of date. Machine data comes from the OPDB snapshot of
-**2026-11-06**; driver data from `src/wpc` at the commit this file was generated from, on
-**2026-11-06**.
+**2026-11-07**; driver data from `src/wpc` at the commit this file was generated from, on
+**2026-11-07**.
 
 A machine is one OPDB *group*, so a title and its remakes are one row, dated and credited
 to the original. Its status is that of the *worst* of its ROM sets, so "fully working"
