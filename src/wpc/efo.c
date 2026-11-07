@@ -244,7 +244,7 @@ MACHINE_DRIVER_END
     COREPORT_BIT   (0x0002, "Coin 2",                KEYCODE_4) \
     COREPORT_BIT   (0x0004, "Coin 3",                KEYCODE_5) \
     COREPORT_BIT   (0x0008, "Tilt",                  KEYCODE_DEL) \
-    COREPORT_BITTOG(0x0010, "Coin Door",             KEYCODE_END) \
+    COREPORT_BIT   (0x0010, "Coin Door",             KEYCODE_END) \
     COREPORT_BIT   (0x0020, "Test",                  KEYCODE_7) \
     COREPORT_BIT   (0x0100, "Port 1",                KEYCODE_1_PAD) \
     COREPORT_BIT   (0x0200, "Port 2",                KEYCODE_2_PAD) \

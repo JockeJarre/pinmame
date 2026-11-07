@@ -193,7 +193,7 @@ INPUT_PORTS_START(trebol)
     COREPORT_BIT(     0x0400, "Coin #2",     KEYCODE_5)
     COREPORT_BIT(     0x0004, "Start",       KEYCODE_1)
     COREPORT_BIT(     0x8000, "Tilt",        KEYCODE_DEL)
-    COREPORT_BITTOG(  0x0008, "Coin Door",   KEYCODE_END)
+    COREPORT_BIT   (  0x0008, "Coin Door",   KEYCODE_END)
     COREPORT_BIT(     0x0010, "Bookkeeping", KEYCODE_7)
     COREPORT_BIT(     0x0100, "Clear NVRAM", KEYCODE_0)
   PORT_START /* 1 */

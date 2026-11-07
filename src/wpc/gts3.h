@@ -61,7 +61,7 @@
     COREPORT_BITDEF(  0x0008, IPT_COIN4,          KEYCODE_6) \
     COREPORT_BITDEF(  0x0010, IPT_START1,         IP_KEY_DEFAULT) \
     COREPORT_BITTOG(  0x0020, "Tournament",       KEYCODE_2) \
-    COREPORT_BITTOG(  0x0040, "Coin Door",        KEYCODE_END) \
+    COREPORT_BIT   (  0x0040, "Coin Door",        KEYCODE_END) \
     /* These are put in switch column 0 since they are not read in the regular switch matrix */ \
     COREPORT_BIT(     0x0100, "Diagnostic",       KEYCODE_0) \
     COREPORT_BIT(     0x0200, "Ball Tilt",        KEYCODE_INSERT) \

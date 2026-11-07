@@ -210,7 +210,7 @@ INPUT_PORTS_START(strike) \
     COREPORT_BIT   (0x0400, "Start Button",  KEYCODE_1) \
     COREPORT_BIT   (0x0100, "Coin Slot #1",  KEYCODE_3) \
     COREPORT_BIT   (0x0200, "Coin Slot #2",  KEYCODE_5) \
-    COREPORT_BITTOG(0x0002, "Coin Door",     KEYCODE_END) \
+    COREPORT_BIT   (0x0002, "Coin Door",     KEYCODE_END) \
     COREPORT_BIT   (0x0800, "Tilt/Advance",  KEYCODE_INSERT) \
     COREPORT_BITTOG(0x0001, "Sense Input A", KEYCODE_PGDN) \
   PORT_START /* 1 */ \
@@ -311,7 +311,7 @@ INPUT_PORTS_START(skijump) \
     COREPORT_BIT   (0x0400, "Start Button",  KEYCODE_1) \
     COREPORT_BIT   (0x0100, "Coin Slot #1",  KEYCODE_3) \
     COREPORT_BIT   (0x0200, "Coin Slot #2",  KEYCODE_5) \
-    COREPORT_BITTOG(0x0002, "Coin Door",     KEYCODE_END) \
+    COREPORT_BIT   (0x0002, "Coin Door",     KEYCODE_END) \
     COREPORT_BIT   (0x0800, "Tilt/Advance",  KEYCODE_INSERT) \
     COREPORT_BITTOG(0x0001, "Sense Input A", KEYCODE_PGDN) \
   PORT_START /* 1 */ \
@@ -414,7 +414,7 @@ INPUT_PORTS_START(spacecty) \
     COREPORT_BIT   (0x0400, "Start Button",  KEYCODE_1) \
     COREPORT_BIT   (0x0100, "Coin Slot #1",  KEYCODE_3) \
     COREPORT_BIT   (0x0200, "Coin Slot #2",  KEYCODE_5) \
-    COREPORT_BITTOG(0x0002, "Coin Door",     KEYCODE_END) \
+    COREPORT_BIT   (0x0002, "Coin Door",     KEYCODE_END) \
     COREPORT_BIT   (0x0800, "Tilt/Advance",  KEYCODE_INSERT) \
     COREPORT_BITTOG(0x0001, "Sense Input A", KEYCODE_PGDN) \
   PORT_START /* 1 */ \

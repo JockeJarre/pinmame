@@ -10,7 +10,7 @@
     COREPORT_BIT(     0x0004, "Slam Tilt",        KEYCODE_HOME) \
     COREPORT_BITDEF(  0x0008, IPT_TILT,           KEYCODE_INSERT) \
     COREPORT_BITTOG(  0x0010, "Test / Reset",     KEYCODE_7) \
-    COREPORT_BITTOG(  0x0020, "Coin Door",        KEYCODE_END) \
+    COREPORT_BIT   (  0x0020, "Coin Door",        KEYCODE_END) \
     COREPORT_BITTOG(  0x0040, "Box  Door",        KEYCODE_PGUP) \
     COREPORT_BITDEF(  0x0080, IPT_COIN2,          IP_KEY_DEFAULT) \
     /* Switch Column 8 (7 in game) */ \

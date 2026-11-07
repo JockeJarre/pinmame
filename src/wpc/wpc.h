@@ -15,7 +15,7 @@
     COREPORT_BIT(     0x0040, "Up",             KEYCODE_9) \
     COREPORT_BIT(     0x0080, "Enter",          KEYCODE_0) \
     /* Common switches */ \
-    COREPORT_BITTOG(  0x0100, "Coin Door",      KEYCODE_END)  \
+    COREPORT_BIT   (  0x0100, "Coin Door",      KEYCODE_END)  \
     COREPORT_BITDEF(  0x0200, IPT_START1,       IP_KEY_DEFAULT)  \
     COREPORT_BITDEF(  0x0400, IPT_TILT,         KEYCODE_INSERT)  \
     COREPORT_BIT(     0x0800, "Slam Tilt",      KEYCODE_HOME)  \

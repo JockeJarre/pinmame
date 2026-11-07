@@ -299,7 +299,7 @@ static int dedswitch_upper_r(void)
     COREPORT_BITDEF(  0x0004, IPT_COIN3,          KEYCODE_5) \
     COREPORT_BITDEF(  0x0008, IPT_COIN4,          KEYCODE_6) \
     /*None*/ \
-    COREPORT_BITTOG(  0x1000, "Coin Door",        KEYCODE_END) \
+    COREPORT_BIT   (  0x1000, "Coin Door",        KEYCODE_END) \
   PORT_START /* 1 */ \
     COREPORT_DIPNAME( 0x001f, 0x0000, "Country") \
       COREPORT_DIPSET(0x0000, "USA" ) \
